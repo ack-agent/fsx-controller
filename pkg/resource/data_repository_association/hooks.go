@@ -17,8 +17,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
+	ackcompare "github.com/aws-controllers-k8s/runtime/pkg/compare"
 	ackerr "github.com/aws-controllers-k8s/runtime/pkg/errors"
 	ackrequeue "github.com/aws-controllers-k8s/runtime/pkg/requeue"
 	ackrtlog "github.com/aws-controllers-k8s/runtime/pkg/runtime/log"
@@ -27,6 +29,7 @@ import (
 	svcsdktypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
 
 	svcapitypes "github.com/aws-controllers-k8s/fsx-controller/apis/v1alpha1"
+	"github.com/aws-controllers-k8s/fsx-controller/pkg/util"
 )
 
 // DeleteDataInFileSystemAnnotation sets DeleteDataInFileSystem ("true" or
@@ -92,7 +95,7 @@ var requeueWaitWhileDeleting = ackrequeue.NeededAfter(
 )
 
 // syncTags brings the association's AWS tags in line with Spec.Tags using
-// TagResource/UntagResource. Removals and additions are separate calls.
+// TagResource/UntagResource (see util.SyncTags).
 func (rm *resourceManager) syncTags(
 	ctx context.Context,
 	desired *resource,
@@ -102,55 +105,136 @@ func (rm *resourceManager) syncTags(
 	exit := rlog.Trace("rm.syncTags")
 	defer func() { exit(err) }()
 
-	// ResourceARN carries `is_arn: true`, so a read populates
-	// Status.ACKResourceMetadata.ARN. The guard is defensive.
-	var arn *string
-	if latest.ko.Status.ACKResourceMetadata != nil && latest.ko.Status.ACKResourceMetadata.ARN != nil {
-		arn = aws.String(string(*latest.ko.Status.ACKResourceMetadata.ARN))
-	}
-	if arn == nil {
-		return fmt.Errorf("cannot sync tags: resource ARN is not yet known")
-	}
+	return util.SyncTags(
+		ctx, desired.ko.Spec.Tags, latest.ko.Spec.Tags,
+		latest.ko.Status.ACKResourceMetadata, convertToOrderedACKTags,
+		rm.sdkapi, rm.metrics,
+	)
+}
 
-	desiredTags, _ := convertToOrderedACKTags(desired.ko.Spec.Tags)
-	latestTags, _ := convertToOrderedACKTags(latest.ko.Spec.Tags)
-
-	var toRemove []string
-	for k := range latestTags {
-		if _, found := desiredTags[k]; !found {
-			toRemove = append(toRemove, k)
-		}
+// rejectUnexpressibleS3Changes returns a terminal error when desired removes
+// S3, AutoExportPolicy or AutoImportPolicy while FSx still reports events for
+// it.
+//
+// This is a convergence check, not validation, mirroring FileSystem's
+// rejectUnexpressibleChanges: UpdateDataRepositoryAssociation only applies the
+// members it is sent and has no "clear" member, and the generated
+// newUpdateRequestPayload omits nil policies. Removing a policy is therefore
+// never applied, Describe keeps returning it, and every reconcile would issue
+// another Update. Editing the Spec to set the policy explicitly clears the
+// terminal condition.
+//
+// Only a latest policy with at least one event is treated as removed, so an
+// empty S3{} reported for an association that never set s3 is not rejected.
+// Known gap: in that empty-S3 case Spec.S3 may still appear in the delta and
+// be sent as an Update without S3; what Describe returns there has not been
+// verified against a live resource.
+func rejectUnexpressibleS3Changes(
+	desired *resource,
+	latest *resource,
+	delta *ackcompare.Delta,
+) error {
+	if delta == nil || !delta.DifferentAt("Spec.S3") {
+		return nil
 	}
-
-	var toAdd []svcsdktypes.Tag
-	for k, v := range desiredTags {
-		if latestValue, found := latestTags[k]; !found || latestValue != v {
-			toAdd = append(toAdd, svcsdktypes.Tag{
-				Key:   aws.String(k),
-				Value: aws.String(v),
-			})
-		}
+	latestS3 := latest.ko.Spec.S3
+	if latestS3 == nil {
+		return nil
 	}
+	desiredS3 := desired.ko.Spec.S3
 
-	if len(toRemove) > 0 {
-		_, err = rm.sdkapi.UntagResource(ctx, &svcsdk.UntagResourceInput{
-			ResourceARN: arn,
-			TagKeys:     toRemove,
-		})
-		rm.metrics.RecordAPICall("UPDATE", "UntagResource", err)
-		if err != nil {
-			return err
-		}
+	var paths []string
+	if latestS3.AutoExportPolicy != nil && len(latestS3.AutoExportPolicy.Events) > 0 &&
+		(desiredS3 == nil || desiredS3.AutoExportPolicy == nil) {
+		paths = append(paths, "Spec.S3.AutoExportPolicy")
 	}
-	if len(toAdd) > 0 {
-		_, err = rm.sdkapi.TagResource(ctx, &svcsdk.TagResourceInput{
-			ResourceARN: arn,
-			Tags:        toAdd,
-		})
-		rm.metrics.RecordAPICall("UPDATE", "TagResource", err)
-		if err != nil {
-			return err
-		}
+	if latestS3.AutoImportPolicy != nil && len(latestS3.AutoImportPolicy.Events) > 0 &&
+		(desiredS3 == nil || desiredS3.AutoImportPolicy == nil) {
+		paths = append(paths, "Spec.S3.AutoImportPolicy")
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	return ackerr.NewTerminalError(fmt.Errorf(
+		"cannot apply changes to %s: UpdateDataRepositoryAssociation only "+
+			"applies the members it is sent, so removing a policy is never "+
+			"applied in FSx; set the policy explicitly instead of removing it",
+		strings.Join(paths, ", "),
+	))
+}
+
+// requeueIfNotUpdatable requeues while the association is CREATING, UPDATING
+// or DELETING. FSx rejects UpdateDataRepositoryAssociation in those states
+// with BadRequest (reported in PR review), which would otherwise surface in
+// the CR's conditions on every requeue. It only waits, never rejects.
+// MISCONFIGURED stays updatable because an update is one way to fix it;
+// FAILED never reaches update because the read hook returns Terminal first.
+//
+// updateable.when is not used: the generated guard is emitted after the
+// sdk_update_pre_build_request hook, so it could not guard syncTags
+// (TagResource/UntagResource) or the tags-only early return.
+func requeueIfNotUpdatable(latest *resource) error {
+	if latest == nil || latest.ko == nil || latest.ko.Status.Lifecycle == nil {
+		return nil
+	}
+	lifecycle := *latest.ko.Status.Lifecycle
+	switch lifecycle {
+	case string(svcsdktypes.DataRepositoryLifecycleCreating),
+		string(svcsdktypes.DataRepositoryLifecycleUpdating),
+		string(svcsdktypes.DataRepositoryLifecycleDeleting):
+		return ackrequeue.NeededAfter(
+			fmt.Errorf(
+				"data repository association is in %q state, requeuing until it can be updated",
+				lifecycle,
+			),
+			30*time.Second,
+		)
 	}
 	return nil
+}
+
+// terminalIfFailed returns a terminal error when FSx reports the association
+// as FAILED, which the API documents as "a terminal state that cannot be
+// recovered". The returned resource is non-nil so Status (and FailureDetails)
+// is still patched alongside the Terminal condition.
+//
+// MISCONFIGURED is deliberately excluded: FSx documents it as recoverable once
+// the configuration is corrected, and the fix is usually on the bucket side
+// (external state). A Terminal condition would stop the requeue, so the CR
+// would never observe the association returning to AVAILABLE.
+//
+// Never while the CR is being deleted: the delete path calls ReadOne first and
+// aborts on any error but NotFound, and FAILED associations are deletable.
+func terminalIfFailed(ko *svcapitypes.DataRepositoryAssociation) error {
+	if ko == nil || ko.Status.Lifecycle == nil {
+		return nil
+	}
+	if ko.DeletionTimestamp != nil {
+		return nil
+	}
+	if *ko.Status.Lifecycle != string(svcsdktypes.DataRepositoryLifecycleFailed) {
+		return nil
+	}
+	reason := "no failure details reported"
+	if ko.Status.FailureDetails != nil && ko.Status.FailureDetails.Message != nil {
+		reason = *ko.Status.FailureDetails.Message
+	}
+	return ackerr.NewTerminalError(fmt.Errorf(
+		"data repository association is in FAILED state and cannot recover: %s", reason,
+	))
+}
+
+// setDeletingLifecycle records the lifecycle returned by
+// DeleteDataRepositoryAssociation (falling back to DELETING) on r, so Status
+// shows the delete in progress. Later reconciles are held by the
+// deletable.when guard, which does not patch Status, so this value stays.
+func setDeletingLifecycle(
+	r *resource,
+	resp *svcsdk.DeleteDataRepositoryAssociationOutput,
+) {
+	if resp != nil && resp.Lifecycle != "" {
+		r.ko.Status.Lifecycle = aws.String(string(resp.Lifecycle))
+		return
+	}
+	r.ko.Status.Lifecycle = aws.String(string(svcsdktypes.DataRepositoryLifecycleDeleting))
 }

@@ -18,9 +18,6 @@ spec:
     - jsonPath: .status.id
       name: ID
       type: string
-    - jsonPath: .spec.fileSystemID
-      name: FILESYSTEM
-      type: string
     - jsonPath: .spec.fileSystemPath
       name: PATH
       type: string

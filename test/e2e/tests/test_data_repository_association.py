@@ -63,8 +63,9 @@ FS_DELETE_WAIT_PERIODS = 30
 FS_DELETE_PERIOD_LENGTH = 30
 
 # DRA lifecycle states that will never become AVAILABLE without a Spec or
-# bucket change. The controller does not mark them terminal (synced.when is
-# AVAILABLE only), so the test fails fast on them itself.
+# bucket change. The controller marks FAILED as Terminal, but MISCONFIGURED is
+# left retryable (the fix is usually bucket-side), so the test checks both
+# itself to fail fast and report failureDetails.
 DRA_FAILED_LIFECYCLES = ("FAILED", "MISCONFIGURED")
 
 # An earlier run saw associations stay CREATING for more than 20 minutes, with
@@ -229,6 +230,7 @@ class TestDataRepositoryAssociation:
         validator = DataRepositoryAssociationValidator(fsx_client)
         self._assert_created(ref, validator, file_system_id, association_id, prefix)
         self._update_and_assert(ref, validator, association_id)
+        self._remove_policy_rejected(ref, validator, association_id)
         self._update_tags_and_assert(ref, validator, association_id)
         self._delete_and_assert(ref, validator, association_id)
 
@@ -298,6 +300,40 @@ class TestDataRepositoryAssociation:
         cr = k8s.get_resource(ref)
         assert cr["spec"]["importedFileChunkSize"] == UPDATED_CHUNK_SIZE
         assert cr["status"]["lifecycle"] == "AVAILABLE"
+        # UpdateDataRepositoryAssociation carries no tags; the update must not
+        # clear or roll back spec.tags, nor untag in AWS.
+        spec_tags = {t["key"]: t["value"] for t in cr["spec"].get("tags", [])}
+        assert spec_tags.get(TAG_KEY) == INITIAL_TAG_VALUE
+        assert validator.get_tags(association_id)[TAG_KEY] == INITIAL_TAG_VALUE
+
+    def _remove_policy_rejected(self, ref, validator, association_id):
+        """Removing autoExportPolicy cannot be carried by
+        UpdateDataRepositoryAssociation, so the controller sets Terminal
+        instead of re-sending an Update forever. Restoring the policy clears
+        it.
+        """
+        k8s.patch_custom_resource(ref, {
+            "spec": {"s3": {"autoExportPolicy": None}},
+        })
+        time.sleep(MODIFY_WAIT_AFTER_SECONDS)
+
+        assert k8s.wait_on_condition(
+            ref, condition.CONDITION_TYPE_TERMINAL, "True",
+            wait_periods=DRA_MODIFY_WAIT_PERIODS,
+            period_length=DRA_MODIFY_PERIOD_LENGTH,
+        )
+        dra = validator.get(association_id)
+        assert dra["S3"].get("AutoExportPolicy", {}).get("Events") == ["NEW"]
+
+        k8s.patch_custom_resource(ref, {
+            "spec": {"s3": {"autoExportPolicy": {"events": ["NEW"]}}},
+        })
+        time.sleep(MODIFY_WAIT_AFTER_SECONDS)
+        assert k8s.wait_on_condition(
+            ref, condition.CONDITION_TYPE_RESOURCE_SYNCED, "True",
+            wait_periods=DRA_MODIFY_WAIT_PERIODS,
+            period_length=DRA_MODIFY_PERIOD_LENGTH,
+        )
 
     def _update_tags_and_assert(self, ref, validator, association_id):
         """Tags go through TagResource/UntagResource, not the Update API."""

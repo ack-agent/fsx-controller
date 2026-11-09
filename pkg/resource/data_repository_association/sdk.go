@@ -207,6 +207,12 @@ func (rm *resourceManager) sdkFind(
 	}
 
 	rm.setStatusDefaults(ko)
+	// FAILED is documented as unrecoverable; surface it as Terminal with
+	// FSx's FailureDetails rather than requeueing forever.
+	if err := terminalIfFailed(ko); err != nil {
+		return &resource{ko}, err
+	}
+
 	return &resource{ko}, nil
 }
 
@@ -476,9 +482,17 @@ func (rm *resourceManager) sdkUpdate(
 	defer func() {
 		exit(err)
 	}()
-	// UpdateDataRepositoryAssociation has no Tags member, so tags are synced
-	// with TagResource/UntagResource and, when they are the only change, the
-	// update call is skipped.
+	// Before any side effect: reject removing an S3 policy, which the update
+	// request cannot carry, and wait while the association is CREATING,
+	// UPDATING or DELETING. UpdateDataRepositoryAssociation has no Tags member,
+	// so tags are synced with TagResource/UntagResource and, when they are the
+	// only change, the update call is skipped.
+	if err = rejectUnexpressibleS3Changes(desired, latest, delta); err != nil {
+		return nil, err
+	}
+	if err = requeueIfNotUpdatable(latest); err != nil {
+		return nil, err
+	}
 	if delta.DifferentAt("Spec.Tags") {
 		if err = rm.syncTags(ctx, desired, latest); err != nil {
 			return nil, err
@@ -611,6 +625,11 @@ func (rm *resourceManager) sdkUpdate(
 	}
 
 	rm.setStatusDefaults(ko)
+	// Tags are not part of UpdateDataRepositoryAssociation; they were synced
+	// with TagResource/UntagResource above, so the Update response is not
+	// authoritative for them. Keep the desired tags.
+	ko.Spec.Tags = desired.ko.Spec.Tags
+
 	return &resource{ko}, nil
 }
 
@@ -702,9 +721,12 @@ func (rm *resourceManager) sdkDelete(
 	resp, err = rm.sdkapi.DeleteDataRepositoryAssociation(ctx, input)
 	rm.metrics.RecordAPICall("DELETE", "DeleteDataRepositoryAssociation", err)
 	// Delete is async: the association stays DELETING until FSx removes it, so
-	// keep the finalizer. Later reconciles are held by the deletable.when guard
-	// until Describe reports DataRepositoryAssociationNotFound.
+	// keep the finalizer. Record the lifecycle from the response (falling back
+	// to DELETING) so Status shows the delete in progress. Later reconciles are
+	// held by the deletable.when guard until Describe reports
+	// DataRepositoryAssociationNotFound.
 	if err == nil {
+		setDeletingLifecycle(r, resp)
 		return r, requeueWaitWhileDeleting
 	}
 

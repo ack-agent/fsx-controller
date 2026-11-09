@@ -143,7 +143,6 @@ type DataRepositoryAssociationStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="ID",type=string,priority=0,JSONPath=`.status.id`
-// +kubebuilder:printcolumn:name="FILESYSTEM",type=string,priority=0,JSONPath=`.spec.fileSystemID`
 // +kubebuilder:printcolumn:name="PATH",type=string,priority=0,JSONPath=`.spec.fileSystemPath`
 // +kubebuilder:printcolumn:name="STATE",type=string,priority=0,JSONPath=`.status.lifecycle`
 // +kubebuilder:printcolumn:name="Synced",type="string",priority=0,JSONPath=".status.conditions[?(@.type==\"ACK.ResourceSynced\")].status"

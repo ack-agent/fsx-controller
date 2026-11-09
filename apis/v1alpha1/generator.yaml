@@ -58,18 +58,29 @@ resources:
           input_fields:
             AssociationId: ID
     hooks:
+      # Rejects removing an S3 policy (the update request cannot carry it),
+      # requeues while CREATING/UPDATING/DELETING (updateable.when is emitted
+      # after this hook, so it could not guard syncTags), and syncs tags:
       # UpdateDataRepositoryAssociation has no Tags member; tags go through
       # TagResource/UntagResource.
       sdk_update_pre_build_request:
         template_path: hooks/data_repository_association/sdk_update_pre_build_request.go.tpl
+      # The Update response is not authoritative for tags; keep desired's.
+      sdk_update_post_set_output:
+        template_path: hooks/data_repository_association/sdk_update_post_set_output.go.tpl
+      # FAILED (documented as unrecoverable) is Terminal. MISCONFIGURED is left
+      # retryable because the fix is usually bucket-side and Terminal would
+      # stop the requeue that observes recovery.
+      sdk_read_many_post_set_output:
+        template_path: hooks/data_repository_association/sdk_read_many_post_set_output.go.tpl
       # DeleteDataInFileSystem is a delete-time option, read from the
       # fsx.services.k8s.aws/delete-data-in-file-system annotation. The service
       # rejects a delete that omits it (despite the SDK marking it optional),
       # so an absent annotation sends the documented default, false.
       sdk_delete_post_build_request:
         template_path: hooks/data_repository_association/sdk_delete_post_build_request.go.tpl
-      # Delete is async: hold the finalizer until Describe reports
-      # DataRepositoryAssociationNotFound.
+      # Delete is async: record DELETING and hold the finalizer until Describe
+      # reports DataRepositoryAssociationNotFound.
       sdk_delete_post_request:
         template_path: hooks/data_repository_association/sdk_delete_post_request.go.tpl
     # Tags round-trip via DescribeDataRepositoryAssociations.
@@ -81,10 +92,10 @@ resources:
           in: [ "AVAILABLE" ]
     # Skip a redundant DeleteDataRepositoryAssociation while one is already in
     # flight. Every other state is allowed so a requested delete is never
-    # blocked. The generated guard returns a nil resource, so Status is not
-    # patched during the wait and may show the pre-delete lifecycle (FileSystem
-    # returns `r` from a hand-written hook for this reason). A code-generator
-    # change to return the resource from the delete guard would fix it.
+    # blocked. The first successful delete records the lifecycle from the
+    # response (DELETING) in Status via sdk_delete_post_request; later guarded
+    # waits return a nil resource and do not patch Status, leaving that value
+    # in place.
     deletable:
       when:
         - path: Status.Lifecycle
@@ -133,10 +144,6 @@ resources:
           json_path: .status.id
           type: string
           index: 10
-        - name: FILESYSTEM
-          json_path: .spec.fileSystemID
-          type: string
-          index: 15
         - name: PATH
           json_path: .spec.fileSystemPath
           type: string
