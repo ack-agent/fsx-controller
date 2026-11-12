@@ -303,3 +303,28 @@ func TestSetDeletingLifecycle(t *testing.T) {
 		})
 	}
 }
+
+func TestKeepDataRepositoryPathSpelling(t *testing.T) {
+	tests := []struct {
+		name    string
+		desired string
+		fsx     string
+		want    string
+	}{
+		{name: "no slash keeps desired spelling", desired: "s3://b/p", fsx: "s3://b/p/", want: "s3://b/p"},
+		{name: "slash unchanged", desired: "s3://b/p/", fsx: "s3://b/p/", want: "s3://b/p/"},
+		{name: "different path keeps FSx value", desired: "s3://b/p", fsx: "s3://b/other/", want: "s3://b/other/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			desired := &svcapitypes.DataRepositoryAssociation{}
+			desired.Spec.DataRepositoryPath = aws.String(tt.desired)
+			ko := &svcapitypes.DataRepositoryAssociation{}
+			ko.Spec.DataRepositoryPath = aws.String(tt.fsx)
+			keepDataRepositoryPathSpelling(desired, ko)
+			if got := aws.ToString(ko.Spec.DataRepositoryPath); got != tt.want {
+				t.Fatalf("DataRepositoryPath = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

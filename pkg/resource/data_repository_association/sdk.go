@@ -207,6 +207,9 @@ func (rm *resourceManager) sdkFind(
 	}
 
 	rm.setStatusDefaults(ko)
+	// FSx appends "/" to a DataRepositoryPath given without one; keep the
+	// user's spelling so the immutable field is not rewritten.
+	keepDataRepositoryPathSpelling(r.ko, ko)
 	// FAILED is documented as unrecoverable; surface it as Terminal with
 	// FSx's FailureDetails rather than requeueing forever.
 	if err := terminalIfFailed(ko); err != nil {
@@ -390,6 +393,10 @@ func (rm *resourceManager) sdkCreate(
 			}
 		}
 	}()
+	// FSx appends "/" to a DataRepositoryPath given without one; keep the
+	// user's spelling so the immutable field is not rewritten.
+	keepDataRepositoryPathSpelling(desired.ko, ko)
+
 	return &resource{ko}, nil
 }
 
@@ -629,6 +636,7 @@ func (rm *resourceManager) sdkUpdate(
 	// with TagResource/UntagResource above, so the Update response is not
 	// authoritative for them. Keep the desired tags.
 	ko.Spec.Tags = desired.ko.Spec.Tags
+	keepDataRepositoryPathSpelling(desired.ko, ko)
 
 	return &resource{ko}, nil
 }

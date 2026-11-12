@@ -65,12 +65,17 @@ resources:
       # TagResource/UntagResource.
       sdk_update_pre_build_request:
         template_path: hooks/data_repository_association/sdk_update_pre_build_request.go.tpl
-      # The Update response is not authoritative for tags; keep desired's.
+      # FSx appends "/" to DataRepositoryPath; keep the user's spelling.
+      sdk_create_post_set_output:
+        template_path: hooks/data_repository_association/sdk_create_post_set_output.go.tpl
+      # The Update response is not authoritative for tags; keep desired's, and
+      # desired's DataRepositoryPath spelling.
       sdk_update_post_set_output:
         template_path: hooks/data_repository_association/sdk_update_post_set_output.go.tpl
       # FAILED (documented as unrecoverable) is Terminal. MISCONFIGURED is left
       # retryable because the fix is usually bucket-side and Terminal would
-      # stop the requeue that observes recovery.
+      # stop the requeue that observes recovery. Also keeps the user's spelling
+      # of DataRepositoryPath (FSx appends "/").
       sdk_read_many_post_set_output:
         template_path: hooks/data_repository_association/sdk_read_many_post_set_output.go.tpl
       # DeleteDataInFileSystem is a delete-time option, read from the

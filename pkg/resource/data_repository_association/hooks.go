@@ -112,6 +112,23 @@ func (rm *resourceManager) syncTags(
 	)
 }
 
+// keepDataRepositoryPathSpelling keeps desired's DataRepositoryPath when FSx
+// reports the same path with a trailing "/" appended. FSx normalizes
+// s3://bucket/prefix to s3://bucket/prefix/; writing that back would change an
+// immutable field, which the CRD's CEL rule rejects.
+func keepDataRepositoryPathSpelling(
+	desired *svcapitypes.DataRepositoryAssociation,
+	ko *svcapitypes.DataRepositoryAssociation,
+) {
+	if desired == nil || desired.Spec.DataRepositoryPath == nil || ko.Spec.DataRepositoryPath == nil {
+		return
+	}
+	want, got := *desired.Spec.DataRepositoryPath, *ko.Spec.DataRepositoryPath
+	if want != got && strings.TrimSuffix(want, "/") == strings.TrimSuffix(got, "/") {
+		ko.Spec.DataRepositoryPath = aws.String(want)
+	}
+}
+
 // rejectUnexpressibleS3Changes returns a terminal error when desired removes
 // S3, AutoExportPolicy or AutoImportPolicy while FSx still reports events for
 // it.
