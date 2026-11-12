@@ -55,22 +55,7 @@ func SyncTags(
 	desired, _ := toACKTags(desiredTags)
 	latest, _ := toACKTags(latestTags)
 
-	var toRemove []string
-	for k := range latest {
-		if _, found := desired[k]; !found {
-			toRemove = append(toRemove, k)
-		}
-	}
-
-	var toAdd []svcsdktypes.Tag
-	for k, v := range desired {
-		if latestValue, found := latest[k]; !found || latestValue != v {
-			toAdd = append(toAdd, svcsdktypes.Tag{
-				Key:   aws.String(k),
-				Value: aws.String(v),
-			})
-		}
-	}
+	toAdd, toRemove := computeTagsDelta(desired, latest)
 
 	if len(toRemove) > 0 {
 		_, err := client.UntagResource(ctx, &svcsdk.UntagResourceInput{
@@ -93,4 +78,27 @@ func SyncTags(
 		}
 	}
 	return nil
+}
+
+// computeTagsDelta returns the tags to add or update and the keys to remove
+// to bring latest in line with desired.
+func computeTagsDelta(
+	desired acktags.Tags,
+	latest acktags.Tags,
+) (toAdd []svcsdktypes.Tag, toRemove []string) {
+	for k := range latest {
+		if _, found := desired[k]; !found {
+			toRemove = append(toRemove, k)
+		}
+	}
+
+	for k, v := range desired {
+		if latestValue, found := latest[k]; !found || latestValue != v {
+			toAdd = append(toAdd, svcsdktypes.Tag{
+				Key:   aws.String(k),
+				Value: aws.String(v),
+			})
+		}
+	}
+	return toAdd, toRemove
 }

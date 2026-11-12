@@ -18,6 +18,7 @@ import logging
 import time
 from typing import Dict, Optional
 
+from acktest import tags as ack_tags
 from acktest.k8s import condition
 from acktest.k8s import resource as k8s
 from botocore.exceptions import ClientError
@@ -149,27 +150,27 @@ class FSxValidator:
             time.sleep(period_length)
         return False
 
-    def wait_until_tag(
+    def wait_until_tags(
         self,
         file_system_id: str,
-        key: str,
-        value: str,
+        expected: Dict[str, str],
         wait_periods: int = 20,
         period_length: int = 15,
     ) -> bool:
-        """Polls DescribeFileSystems until the supplied tag has the supplied
-        value.
+        """Polls DescribeFileSystems until the file system's non-ACK tags are
+        exactly the supplied tags, so it waits both for added or changed keys
+        and for removed keys to disappear.
 
         As with the maintenance window, a tag change does not move the file
         system out of AVAILABLE, so the Synced condition is not a usable signal.
         """
         for _ in range(wait_periods):
-            tags = self.get_tags(file_system_id)
-            if tags.get(key) == value:
+            actual = ack_tags.clean(self.get_tags(file_system_id))
+            if actual == expected:
                 return True
             logging.info(
-                f"file system {file_system_id} tag {key} is {tags.get(key)}; "
-                f"waiting for {value}"
+                f"file system {file_system_id} tags are {actual}; "
+                f"waiting for {expected}"
             )
             time.sleep(period_length)
         return False

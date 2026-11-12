@@ -29,6 +29,7 @@ import time
 
 import pytest
 
+from acktest import tags
 from acktest.k8s import condition
 from acktest.k8s import resource as k8s
 from acktest.resources import random_suffix_name
@@ -55,6 +56,16 @@ UPDATED_CHUNK_SIZE = 2048
 TAG_KEY = "ack-fsx-e2e"
 INITIAL_TAG_VALUE = "initial"
 UPDATED_TAG_VALUE = "updated"
+SECOND_TAG_KEY = "ack-fsx-e2e-second"
+SECOND_TAG_VALUE = "second"
+NEW_TAG_KEY = "ack-fsx-e2e-new"
+NEW_TAG_VALUE = "new"
+
+# User tags at create time.
+INITIAL_TAGS = {TAG_KEY: INITIAL_TAG_VALUE, SECOND_TAG_KEY: SECOND_TAG_VALUE}
+# User tags after the tag step: TAG_KEY changed, SECOND_TAG_KEY removed and
+# NEW_TAG_KEY added.
+UPDATED_TAGS = {TAG_KEY: UPDATED_TAG_VALUE, NEW_TAG_KEY: NEW_TAG_VALUE}
 
 # File system: 5-10 min to AVAILABLE and 5-10 min to disappear.
 FS_CREATE_WAIT_PERIODS = 40
@@ -132,6 +143,8 @@ def lustre_file_system(fsx_client):
     replacements["WEEKLY_MAINTENANCE_START_TIME"] = FS_MAINTENANCE_WINDOW
     replacements["TAG_KEY"] = TAG_KEY
     replacements["TAG_VALUE"] = INITIAL_TAG_VALUE
+    replacements["SECOND_TAG_KEY"] = SECOND_TAG_KEY
+    replacements["SECOND_TAG_VALUE"] = SECOND_TAG_VALUE
 
     resource_data = load_fsx_resource(
         "file_system", additional_replacements=replacements,
@@ -184,6 +197,8 @@ def data_repository_association(fsx_client, lustre_file_system):
     replacements["IMPORTED_FILE_CHUNK_SIZE"] = str(INITIAL_CHUNK_SIZE)
     replacements["TAG_KEY"] = TAG_KEY
     replacements["TAG_VALUE"] = INITIAL_TAG_VALUE
+    replacements["SECOND_TAG_KEY"] = SECOND_TAG_KEY
+    replacements["SECOND_TAG_VALUE"] = SECOND_TAG_VALUE
 
     resource_data = load_fsx_resource(
         "data_repository_association", additional_replacements=replacements,
@@ -259,7 +274,14 @@ class TestDataRepositoryAssociation:
         assert dra["DataRepositoryPath"].rstrip("/").endswith(prefix)
         assert dra["ImportedFileChunkSize"] == INITIAL_CHUNK_SIZE
         assert dra["S3"]["AutoImportPolicy"]["Events"] == ["NEW"]
-        assert validator.get_tags(association_id)[TAG_KEY] == INITIAL_TAG_VALUE
+        aws_tags = validator.get_tags(association_id)
+        tags.assert_ack_system_tags(tags=aws_tags)
+        tags.assert_equal_without_ack_tags(expected=INITIAL_TAGS, actual=aws_tags)
+        # FilterSystemTags must keep the ACK system tags out of spec.tags.
+        tags.assert_equal(
+            expected=INITIAL_TAGS, actual=cr["spec"]["tags"],
+            key_member_name="key", value_member_name="value",
+        )
 
         # Describe must not have rewritten the declared paths (no perpetual
         # delta from server-side normalization).
@@ -302,9 +324,13 @@ class TestDataRepositoryAssociation:
         assert cr["status"]["lifecycle"] == "AVAILABLE"
         # UpdateDataRepositoryAssociation carries no tags; the update must not
         # clear or roll back spec.tags, nor untag in AWS.
-        spec_tags = {t["key"]: t["value"] for t in cr["spec"].get("tags", [])}
-        assert spec_tags.get(TAG_KEY) == INITIAL_TAG_VALUE
-        assert validator.get_tags(association_id)[TAG_KEY] == INITIAL_TAG_VALUE
+        aws_tags = validator.get_tags(association_id)
+        tags.assert_ack_system_tags(tags=aws_tags)
+        tags.assert_equal_without_ack_tags(expected=INITIAL_TAGS, actual=aws_tags)
+        tags.assert_equal(
+            expected=INITIAL_TAGS, actual=cr["spec"]["tags"],
+            key_member_name="key", value_member_name="value",
+        )
 
     def _remove_policy_rejected(self, ref, validator, association_id):
         """Removing autoExportPolicy cannot be carried by
@@ -336,16 +362,27 @@ class TestDataRepositoryAssociation:
         )
 
     def _update_tags_and_assert(self, ref, validator, association_id):
-        """Tags go through TagResource/UntagResource, not the Update API."""
+        """Tags go through TagResource/UntagResource, not the Update API.
+
+        The step changes TAG_KEY, removes SECOND_TAG_KEY and adds NEW_TAG_KEY,
+        so both TagResource and UntagResource run. The ACK system tags must
+        survive the removal.
+        """
         k8s.patch_custom_resource(ref, {
-            "spec": {"tags": [{"key": TAG_KEY, "value": UPDATED_TAG_VALUE}]},
+            "spec": {"tags": [
+                {"key": TAG_KEY, "value": UPDATED_TAG_VALUE},
+                {"key": NEW_TAG_KEY, "value": NEW_TAG_VALUE},
+            ]},
         })
         time.sleep(MODIFY_WAIT_AFTER_SECONDS)
 
+        # Exact match on the non-ACK tags, so this also waits for the removed
+        # key to disappear.
         assert validator.wait_until(
             association_id,
-            lambda d: {t["Key"]: t["Value"] for t in d.get("Tags", [])}.get(TAG_KEY)
-            == UPDATED_TAG_VALUE,
+            lambda d: tags.clean(
+                {t["Key"]: t["Value"] for t in d.get("Tags", [])}
+            ) == UPDATED_TAGS,
             "re-tagged",
             wait_periods=DRA_MODIFY_WAIT_PERIODS,
             period_length=DRA_MODIFY_PERIOD_LENGTH,
@@ -354,6 +391,15 @@ class TestDataRepositoryAssociation:
             ref, condition.CONDITION_TYPE_RESOURCE_SYNCED, "True",
             wait_periods=DRA_MODIFY_WAIT_PERIODS,
             period_length=DRA_MODIFY_PERIOD_LENGTH,
+        )
+
+        aws_tags = validator.get_tags(association_id)
+        tags.assert_ack_system_tags(tags=aws_tags)
+        tags.assert_equal_without_ack_tags(expected=UPDATED_TAGS, actual=aws_tags)
+        cr = k8s.get_resource(ref)
+        tags.assert_equal(
+            expected=UPDATED_TAGS, actual=cr["spec"]["tags"],
+            key_member_name="key", value_member_name="value",
         )
 
     def _delete_and_assert(self, ref, validator, association_id):
