@@ -276,3 +276,75 @@ class DataRepositoryAssociationValidator:
             )
             time.sleep(period_length)
         return self.get(association_id) is None
+
+
+# The only errors BackupValidator.get translates to None.
+BACKUP_NOT_FOUND_ERROR_CODES = frozenset(("BackupNotFound",))
+
+
+class BackupValidator:
+    def __init__(self, fsx_client):
+        self.fsx_client = fsx_client
+
+    def get(self, backup_id: str) -> Optional[dict]:
+        """Returns the backup with the supplied ID, or None once FSx reports
+        BackupNotFound. Any other error is re-raised, so a transient failure
+        cannot pass for a completed delete.
+        """
+        try:
+            resp = self.fsx_client.describe_backups(BackupIds=[backup_id])
+            backups = resp.get("Backups", [])
+            if len(backups) == 0:
+                return None
+            return backups[0]
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code in BACKUP_NOT_FOUND_ERROR_CODES:
+                return None
+            logging.error(f"describe_backups({backup_id}) failed with {code}")
+            raise
+
+    def get_tags(self, backup_id: str) -> Dict[str, str]:
+        backup = self.get(backup_id)
+        if backup is None:
+            return {}
+        return {t["Key"]: t["Value"] for t in backup.get("Tags", [])}
+
+    def wait_until(
+        self,
+        backup_id: str,
+        predicate,
+        description: str,
+        wait_periods: int = 40,
+        period_length: int = 15,
+    ) -> bool:
+        """Polls DescribeBackups until predicate(backup) is true. A tag change
+        leaves the backup AVAILABLE, so Synced is not a usable signal.
+        """
+        for _ in range(wait_periods):
+            backup = self.get(backup_id)
+            if backup is not None and predicate(backup):
+                return True
+            logging.info(
+                f"backup {backup_id} not yet {description}; lifecycle "
+                f"{None if backup is None else backup.get('Lifecycle')}"
+            )
+            time.sleep(period_length)
+        return False
+
+    def wait_until_gone(
+        self,
+        backup_id: str,
+        wait_periods: int = 20,
+        period_length: int = 15,
+    ) -> bool:
+        for _ in range(wait_periods):
+            backup = self.get(backup_id)
+            if backup is None:
+                return True
+            logging.info(
+                f"backup {backup_id} still present in state "
+                f"{backup.get('Lifecycle')}; waiting"
+            )
+            time.sleep(period_length)
+        return self.get(backup_id) is None

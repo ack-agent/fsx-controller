@@ -1,0 +1,1 @@
+	recoverObservedSourceIDs(r, resp, ko)

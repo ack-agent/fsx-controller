@@ -1,7 +1,6 @@
 ignore:
   resource_names:
       - AndAttachS3AccessPoint
-      - Backup
       - DataRepositoryTask
       - FileCache
       - FileSystemFromBackup
@@ -13,6 +12,10 @@ ignore:
       # AdministrativeAction.TargetFileSystemValues is itself a FileSystem, so
       # the shape recurses infinitely. Progress reporting only.
       - FileSystem.AdministrativeActions
+      # Same recursion through Backup.Volume: AdministrativeAction carries
+      # TargetVolumeValues (a Volume) and TargetSnapshotValues (a Snapshot with
+      # its own AdministrativeActions). Progress reporting only.
+      - Volume.AdministrativeActions
       # Create input takes DNS-name strings; the output returns Alias structs
       # ({Name, Lifecycle}). Code-gen matches them by name and emits an
       # unassigned element var. `set.from` can't reach Alias.Name (a nested
@@ -34,6 +37,115 @@ ignore:
       - DataRepositoryAssociation.NFS
       - DataRepositoryAssociation.DataRepositorySubdirectories
 resources:
+  Backup:
+    # ClientRequestToken is an SDK idempotency token the middleware auto-fills.
+    ignore_idempotency_token: true
+    # FSx has no UpdateBackup, so code-gen would emit sdk_update_not_implemented
+    # (a terminal NotImplemented with no hook points) and every tag edit -- including
+    # the controller-version tag on upgrade -- would make the CR terminal.
+    # customUpdateBackup syncs tags and rejects any other delta.
+    update_operation:
+      custom_method_name: customUpdateBackup
+    # Drop the Backup prefix that stutters on a Backup kind. DescribeBackups'
+    # BackupIds input needs no rename: it already matches the <Resource>Ids
+    # lookup, so the generated list request filters by Status.ID.
+    renames:
+      operations:
+        CreateBackup:
+          output_fields:
+            BackupId: ID
+            SourceBackupId: SourceID
+            SourceBackupRegion: SourceRegion
+        DescribeBackups:
+          output_fields:
+            BackupId: ID
+            SourceBackupId: SourceID
+            SourceBackupRegion: SourceRegion
+        DeleteBackup:
+          input_fields:
+            BackupId: ID
+    hooks:
+      # DescribeBackups reports the source IDs only nested (FileSystem.FileSystemId,
+      # Volume.VolumeId); recover the observed values for declared fields so a
+      # change stays visible in the delta.
+      sdk_read_many_post_set_output:
+        template_path: hooks/backup/sdk_read_many_post_set_output.go.tpl
+    # Tags round-trip via DescribeBackups; synced from customUpdateBackup.
+    tags:
+      ignore: false
+    # CREATING, PENDING, TRANSFERRING and COPYING requeue until AVAILABLE.
+    # Known gap: FAILED cannot be declared terminal here either; it requeues
+    # with Status.FailureDetails explaining why.
+    synced:
+      when:
+        - path: Status.Lifecycle
+          in: [ "AVAILABLE" ]
+    # No terminal_codes: BadRequest is the catch-all; FileSystemNotFound,
+    # VolumeNotFound and UnsupportedOperation are fixed only through the
+    # immutable source IDs or the source's own configuration;
+    # BackupInProgress/ServiceLimitExceeded are external;
+    # IncompatibleParameterError is an idempotency-token clash. Delete-time
+    # BackupInProgress/BackupBeingCopied/BackupRestoring are left retryable.
+    exceptions:
+      errors:
+        404:
+          code: BackupNotFound
+    fields:
+      # Only `ARN`/`BackupARN` are auto-detected; syncTags reads the ARN from
+      # Status.ACKResourceMetadata.ARN.
+      ResourceARN:
+        is_arn: true
+      # Without go_tag the Go-keyword escape would serialize this as `type_`.
+      Type:
+        go_tag: json:"type,omitempty"
+      # Same keyword escape on SnapLock shapes first reached through
+      # Status.Volume (new with this CRD). RetentionPeriod is one shape shared
+      # by Default/Maximum/MinimumRetention. OpenZFSUserOrGroupQuota.Type stays
+      # `type_`: that shape is shared with the released FileSystem CRD, where
+      # renaming it would be a breaking change.
+      Volume.OntapConfiguration.SnaplockConfiguration.AutocommitPeriod.Type:
+        go_tag: json:"type,omitempty"
+      Volume.OntapConfiguration.SnaplockConfiguration.RetentionPeriod.DefaultRetention.Type:
+        go_tag: json:"type,omitempty"
+      # Create-only: there is no Update API.
+      # Known gap (community#3097): the CEL rule is skipped when the old value
+      # is absent and cannot see FileSystemRef changes; the read hook recovers
+      # the observed IDs, so the delta stays visible and customUpdateBackup
+      # rejects it.
+      FileSystemId:
+        is_immutable: true
+        references:
+          resource: FileSystem
+          path: Status.ID
+      # No reference yet: Volume is not an ACK resource in this controller.
+      VolumeId:
+        is_immutable: true
+    print:
+      add_age_column: true
+      add_synced_column: true
+      order_by: index
+      additional_columns:
+        - name: ID
+          json_path: .status.id
+          type: string
+          index: 10
+        - name: FILESYSTEM
+          json_path: .spec.fileSystemID
+          type: string
+          index: 15
+        - name: TYPE
+          json_path: .status.type
+          type: string
+          index: 20
+        - name: STATE
+          json_path: .status.lifecycle
+          type: string
+          index: 30
+        - name: PROGRESS
+          json_path: .status.progressPercent
+          type: integer
+          index: 35
+          priority: 1
   DataRepositoryAssociation:
     ignore_idempotency_token: true
     renames:

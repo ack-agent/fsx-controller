@@ -44,14 +44,25 @@ type ActiveDirectoryBackupAttributes struct {
 type AdministrativeAction struct {
 	// A detailed error message.
 	Message *string `json:"message,omitempty"`
+	// Displays the current percent of progress of an asynchronous task.
+	ProgressPercent *int64 `json:"progressPercent,omitempty"`
 	// A description of a specific Amazon FSx file system.
 	TargetFileSystemValues *FileSystem_SDK `json:"targetFileSystemValues,omitempty"`
+	// Describes an Amazon FSx volume.
+	TargetVolumeValues *Volume `json:"targetVolumeValues,omitempty"`
 }
 
 // Provides information about a failed administrative action.
 type AdministrativeActionFailureDetails struct {
 	// A detailed error message.
 	Message *string `json:"message,omitempty"`
+}
+
+// Used to specify configuration options for a volume’s storage aggregate
+// or aggregates.
+type AggregateConfiguration struct {
+	Aggregates        []*string `json:"aggregates,omitempty"`
+	TotalConstituents *int64    `json:"totalConstituents,omitempty"`
 }
 
 // A DNS alias that is associated with the file system. You can use a DNS alias
@@ -86,15 +97,36 @@ type AutoImportPolicy struct {
 	Events []*string `json:"events,omitempty"`
 }
 
+// Sets the autocommit period of files in an FSx for ONTAP SnapLock volume,
+// which determines how long the files must remain unmodified before they're
+// automatically transitioned to the write once, read many (WORM) state.
+//
+// For more information, see Autocommit (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/worm-state.html#worm-state-autocommit).
+type AutocommitPeriod struct {
+	Type  *string `json:"type,omitempty"`
+	Value *int64  `json:"value,omitempty"`
+}
+
+// If backup creation fails, this structure contains the details of that failure.
+type BackupFailureDetails struct {
+	// A detailed error message.
+	Message *string `json:"message,omitempty"`
+}
+
 // A backup of an Amazon FSx for Windows File Server, Amazon FSx for Lustre
 // file system, Amazon FSx for NetApp ONTAP volume, or Amazon FSx for OpenZFS
 // file system.
-type Backup struct {
+type Backup_SDK struct {
 	// The ID of the source backup. Specifies the backup that you are copying.
 	BackupID *string `json:"backupID,omitempty"`
 	// The time that the resource was created, in seconds (since 1970-01-01T00:00:00Z),
 	// also known as Unix time.
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
+	// The Microsoft Active Directory attributes of the Amazon FSx for Windows File
+	// Server file system.
+	DirectoryInformation *ActiveDirectoryBackupAttributes `json:"directoryInformation,omitempty"`
+	// If backup creation fails, this structure contains the details of that failure.
+	FailureDetails *BackupFailureDetails `json:"failureDetails,omitempty"`
 	// A description of a specific Amazon FSx file system.
 	FileSystem *FileSystem_SDK `json:"fileSystem,omitempty"`
 	// Specifies the ID of the Key Management Service (KMS) key to use for encrypting
@@ -114,25 +146,46 @@ type Backup struct {
 	// is used. For more information, see Encrypt (https://docs.aws.amazon.com/kms/latest/APIReference/API_Encrypt.html)
 	// in the Key Management Service API Reference.
 	KMSKeyID *string `json:"kmsKeyID,omitempty"`
+	// The lifecycle status of the backup.
+	//
+	//    * AVAILABLE - The backup is fully available.
+	//
+	//    * PENDING - For user-initiated backups on Lustre file systems only; Amazon
+	//    FSx hasn't started creating the backup.
+	//
+	//    * CREATING - Amazon FSx is creating the new user-initiated backup.
+	//
+	//    * TRANSFERRING - For user-initiated backups on Lustre file systems only;
+	//    Amazon FSx is backing up the file system.
+	//
+	//    * COPYING - Amazon FSx is copying the backup.
+	//
+	//    * DELETED - Amazon FSx deleted the backup and it's no longer available.
+	//
+	//    * FAILED - Amazon FSx couldn't finish the backup.
+	Lifecycle *string `json:"lifecycle,omitempty"`
 	// An Amazon Web Services account ID. This ID is a 12-digit number that you
 	// use to construct Amazon Resource Names (ARNs) for resources.
 	OwnerID *string `json:"ownerID,omitempty"`
+	// Displays the current percent of progress of an asynchronous task.
+	ProgressPercent *int64 `json:"progressPercent,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
 	// see Amazon Resource Names (ARNs) (https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html)
 	// in the Amazon Web Services General Reference.
-	ResourceARN *string `json:"resourceARN,omitempty"`
+	ResourceARN  *string `json:"resourceARN,omitempty"`
+	ResourceType *string `json:"resourceType,omitempty"`
+	SizeInBytes  *int64  `json:"sizeInBytes,omitempty"`
 	// The ID of the source backup. Specifies the backup that you are copying.
-	SourceBackupID *string `json:"sourceBackupID,omitempty"`
+	SourceBackupID     *string `json:"sourceBackupID,omitempty"`
+	SourceBackupRegion *string `json:"sourceBackupRegion,omitempty"`
 	// A list of Tag values, with a maximum of 50 elements.
 	Tags []*Tag `json:"tags,omitempty"`
-}
-
-// If backup creation fails, this structure contains the details of that failure.
-type BackupFailureDetails struct {
-	// A detailed error message.
-	Message *string `json:"message,omitempty"`
+	// The type of the backup.
+	Type *string `json:"type_,omitempty"`
+	// Describes an Amazon FSx volume.
+	Volume *Volume `json:"volume,omitempty"`
 }
 
 // Provides a report detailing the data repository task results of the files
@@ -143,6 +196,12 @@ type BackupFailureDetails struct {
 type CompletionReport struct {
 	Enabled *bool   `json:"enabled,omitempty"`
 	Path    *string `json:"path,omitempty"`
+}
+
+// Used to specify the configuration options for an FSx for ONTAP volume's storage
+// aggregate or aggregates.
+type CreateAggregateConfiguration struct {
+	Aggregates []*string `json:"aggregates,omitempty"`
 }
 
 // Specifies the FSx for ONTAP volume that the S3 access point will be attached
@@ -419,13 +478,40 @@ type CreateFileSystemWindowsConfiguration struct {
 
 // Specifies the configuration of the ONTAP volume that you are creating.
 type CreateOntapVolumeConfiguration struct {
-	CopyTagsToBackups        *bool `json:"copyTagsToBackups,omitempty"`
-	StorageEfficiencyEnabled *bool `json:"storageEfficiencyEnabled,omitempty"`
+	CopyTagsToBackups        *bool   `json:"copyTagsToBackups,omitempty"`
+	JunctionPath             *string `json:"junctionPath,omitempty"`
+	SecurityStyle            *string `json:"securityStyle,omitempty"`
+	SizeInBytes              *int64  `json:"sizeInBytes,omitempty"`
+	SizeInMegabytes          *int64  `json:"sizeInMegabytes,omitempty"`
+	SnapshotPolicy           *string `json:"snapshotPolicy,omitempty"`
+	StorageEfficiencyEnabled *bool   `json:"storageEfficiencyEnabled,omitempty"`
+	StorageVirtualMachineID  *string `json:"storageVirtualMachineID,omitempty"`
+	// Describes the data tiering policy for an ONTAP volume. When enabled, Amazon
+	// FSx for ONTAP's intelligent tiering automatically transitions a volume's
+	// data between the file system's primary storage and capacity pool storage
+	// based on your access patterns.
+	//
+	// Valid tiering policies are the following:
+	//
+	//    * SNAPSHOT_ONLY - (Default value) moves cold snapshots to the capacity
+	//    pool storage tier.
+	//
+	//    * AUTO - moves cold user data and snapshots to the capacity pool storage
+	//    tier based on your access patterns.
+	//
+	//    * ALL - moves all user data blocks in both the active file system and
+	//    Snapshot copies to the storage pool tier.
+	//
+	//    * NONE - keeps a volume's data in the primary storage tier, preventing
+	//    it from being moved to the capacity pool tier.
+	TieringPolicy *TieringPolicy `json:"tieringPolicy,omitempty"`
+	VolumeStyle   *string        `json:"volumeStyle,omitempty"`
 }
 
 // The snapshot configuration to use when creating an Amazon FSx for OpenZFS
 // volume from a snapshot.
 type CreateOpenZFSOriginSnapshotConfiguration struct {
+	CopyStrategy *string `json:"copyStrategy,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
@@ -449,8 +535,20 @@ type CreateOpenZFSVolumeConfiguration struct {
 // Defines the SnapLock configuration when creating an FSx for ONTAP SnapLock
 // volume.
 type CreateSnaplockConfiguration struct {
-	AuditLogVolume          *bool `json:"auditLogVolume,omitempty"`
-	VolumeAppendModeEnabled *bool `json:"volumeAppendModeEnabled,omitempty"`
+	AuditLogVolume *bool `json:"auditLogVolume,omitempty"`
+	// Sets the autocommit period of files in an FSx for ONTAP SnapLock volume,
+	// which determines how long the files must remain unmodified before they're
+	// automatically transitioned to the write once, read many (WORM) state.
+	//
+	// For more information, see Autocommit (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/worm-state.html#worm-state-autocommit).
+	AutocommitPeriod *AutocommitPeriod `json:"autocommitPeriod,omitempty"`
+	PrivilegedDelete *string           `json:"privilegedDelete,omitempty"`
+	// The configuration to set the retention period of an FSx for ONTAP SnapLock
+	// volume. The retention period includes default, maximum, and minimum settings.
+	// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+	RetentionPeriod         *SnaplockRetentionPeriod `json:"retentionPeriod,omitempty"`
+	SnaplockType            *string                  `json:"snaplockType,omitempty"`
+	VolumeAppendModeEnabled *bool                    `json:"volumeAppendModeEnabled,omitempty"`
 }
 
 // The configuration that Amazon FSx uses to join the ONTAP storage virtual
@@ -1066,9 +1164,43 @@ type OntapFileSystemConfiguration struct {
 
 // The configuration of an Amazon FSx for NetApp ONTAP volume.
 type OntapVolumeConfiguration struct {
-	CopyTagsToBackups         *bool `json:"copyTagsToBackups,omitempty"`
-	StorageEfficiencyEnabled  *bool `json:"storageEfficiencyEnabled,omitempty"`
-	StorageVirtualMachineRoot *bool `json:"storageVirtualMachineRoot,omitempty"`
+	// Used to specify configuration options for a volume’s storage aggregate
+	// or aggregates.
+	AggregateConfiguration *AggregateConfiguration `json:"aggregateConfiguration,omitempty"`
+	CopyTagsToBackups      *bool                   `json:"copyTagsToBackups,omitempty"`
+	FlexCacheEndpointType  *string                 `json:"flexCacheEndpointType,omitempty"`
+	JunctionPath           *string                 `json:"junctionPath,omitempty"`
+	OntapVolumeType        *string                 `json:"ontapVolumeType,omitempty"`
+	SecurityStyle          *string                 `json:"securityStyle,omitempty"`
+	SizeInBytes            *int64                  `json:"sizeInBytes,omitempty"`
+	SizeInMegabytes        *int64                  `json:"sizeInMegabytes,omitempty"`
+	// Specifies the SnapLock configuration for an FSx for ONTAP SnapLock volume.
+	SnaplockConfiguration     *SnaplockConfiguration `json:"snaplockConfiguration,omitempty"`
+	SnapshotPolicy            *string                `json:"snapshotPolicy,omitempty"`
+	StorageEfficiencyEnabled  *bool                  `json:"storageEfficiencyEnabled,omitempty"`
+	StorageVirtualMachineID   *string                `json:"storageVirtualMachineID,omitempty"`
+	StorageVirtualMachineRoot *bool                  `json:"storageVirtualMachineRoot,omitempty"`
+	// Describes the data tiering policy for an ONTAP volume. When enabled, Amazon
+	// FSx for ONTAP's intelligent tiering automatically transitions a volume's
+	// data between the file system's primary storage and capacity pool storage
+	// based on your access patterns.
+	//
+	// Valid tiering policies are the following:
+	//
+	//    * SNAPSHOT_ONLY - (Default value) moves cold snapshots to the capacity
+	//    pool storage tier.
+	//
+	//    * AUTO - moves cold user data and snapshots to the capacity pool storage
+	//    tier based on your access patterns.
+	//
+	//    * ALL - moves all user data blocks in both the active file system and
+	//    Snapshot copies to the storage pool tier.
+	//
+	//    * NONE - keeps a volume's data in the primary storage tier, preventing
+	//    it from being moved to the capacity pool tier.
+	TieringPolicy *TieringPolicy `json:"tieringPolicy,omitempty"`
+	UUID          *string        `json:"uuid,omitempty"`
+	VolumeStyle   *string        `json:"volumeStyle,omitempty"`
 }
 
 // Specifies who can mount an OpenZFS file system and the options available
@@ -1141,6 +1273,7 @@ type OpenZFSNfsExport struct {
 // The snapshot configuration used when creating an Amazon FSx for OpenZFS volume
 // from a snapshot.
 type OpenZFSOriginSnapshotConfiguration struct {
+	CopyStrategy *string `json:"copyStrategy,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
@@ -1169,15 +1302,21 @@ type OpenZFSUserOrGroupQuota struct {
 
 // The configuration of an Amazon FSx for OpenZFS volume.
 type OpenZFSVolumeConfiguration struct {
+	CopyStrategy               *string             `json:"copyStrategy,omitempty"`
 	CopyTagsToSnapshots        *bool               `json:"copyTagsToSnapshots,omitempty"`
 	DataCompressionType        *string             `json:"dataCompressionType,omitempty"`
 	DeleteClonedVolumes        *bool               `json:"deleteClonedVolumes,omitempty"`
 	DeleteIntermediateData     *bool               `json:"deleteIntermediateData,omitempty"`
 	DeleteIntermediateSnaphots *bool               `json:"deleteIntermediateSnaphots,omitempty"`
+	DestinationSnapshot        *string             `json:"destinationSnapshot,omitempty"`
 	NfsExports                 []*OpenZFSNfsExport `json:"nfsExports,omitempty"`
-	ParentVolumeID             *string             `json:"parentVolumeID,omitempty"`
-	ReadOnly                   *bool               `json:"readOnly,omitempty"`
-	RecordSizeKiB              *int64              `json:"recordSizeKiB,omitempty"`
+	// The snapshot configuration used when creating an Amazon FSx for OpenZFS volume
+	// from a snapshot.
+	OriginSnapshot    *OpenZFSOriginSnapshotConfiguration `json:"originSnapshot,omitempty"`
+	ParentVolumeID    *string                             `json:"parentVolumeID,omitempty"`
+	ReadOnly          *bool                               `json:"readOnly,omitempty"`
+	RecordSizeKiB     *int64                              `json:"recordSizeKiB,omitempty"`
+	RestoreToSnapshot *string                             `json:"restoreToSnapshot,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
@@ -1187,6 +1326,17 @@ type OpenZFSVolumeConfiguration struct {
 	StorageCapacityQuotaGiB       *int64                     `json:"storageCapacityQuotaGiB,omitempty"`
 	StorageCapacityReservationGiB *int64                     `json:"storageCapacityReservationGiB,omitempty"`
 	UserAndGroupQuotas            []*OpenZFSUserOrGroupQuota `json:"userAndGroupQuotas,omitempty"`
+	VolumePath                    *string                    `json:"volumePath,omitempty"`
+}
+
+// Specifies the retention period of an FSx for ONTAP SnapLock volume. After
+// it is set, it can't be changed. Files can't be deleted or modified during
+// the retention period.
+//
+// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+type RetentionPeriod struct {
+	Type  *string `json:"type,omitempty"`
+	Value *int64  `json:"value,omitempty"`
 }
 
 // Describes the S3 access point configuration of the S3 access point attachment.
@@ -1199,6 +1349,8 @@ type S3AccessPointAttachment struct {
 	// The time that the resource was created, in seconds (since 1970-01-01T00:00:00Z),
 	// also known as Unix time.
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
+	// Describes why a resource lifecycle state changed.
+	LifecycleTransitionReason *LifecycleTransitionReason `json:"lifecycleTransitionReason,omitempty"`
 }
 
 // Describes the FSx for ONTAP attachment configuration of an S3 access point
@@ -1295,8 +1447,44 @@ type SelfManagedActiveDirectoryConfigurationUpdates struct {
 
 // Specifies the SnapLock configuration for an FSx for ONTAP SnapLock volume.
 type SnaplockConfiguration struct {
-	AuditLogVolume          *bool `json:"auditLogVolume,omitempty"`
-	VolumeAppendModeEnabled *bool `json:"volumeAppendModeEnabled,omitempty"`
+	AuditLogVolume *bool `json:"auditLogVolume,omitempty"`
+	// Sets the autocommit period of files in an FSx for ONTAP SnapLock volume,
+	// which determines how long the files must remain unmodified before they're
+	// automatically transitioned to the write once, read many (WORM) state.
+	//
+	// For more information, see Autocommit (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/worm-state.html#worm-state-autocommit).
+	AutocommitPeriod *AutocommitPeriod `json:"autocommitPeriod,omitempty"`
+	PrivilegedDelete *string           `json:"privilegedDelete,omitempty"`
+	// The configuration to set the retention period of an FSx for ONTAP SnapLock
+	// volume. The retention period includes default, maximum, and minimum settings.
+	// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+	RetentionPeriod         *SnaplockRetentionPeriod `json:"retentionPeriod,omitempty"`
+	SnaplockType            *string                  `json:"snaplockType,omitempty"`
+	VolumeAppendModeEnabled *bool                    `json:"volumeAppendModeEnabled,omitempty"`
+}
+
+// The configuration to set the retention period of an FSx for ONTAP SnapLock
+// volume. The retention period includes default, maximum, and minimum settings.
+// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+type SnaplockRetentionPeriod struct {
+	// Specifies the retention period of an FSx for ONTAP SnapLock volume. After
+	// it is set, it can't be changed. Files can't be deleted or modified during
+	// the retention period.
+	//
+	// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+	DefaultRetention *RetentionPeriod `json:"defaultRetention,omitempty"`
+	// Specifies the retention period of an FSx for ONTAP SnapLock volume. After
+	// it is set, it can't be changed. Files can't be deleted or modified during
+	// the retention period.
+	//
+	// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+	MaximumRetention *RetentionPeriod `json:"maximumRetention,omitempty"`
+	// Specifies the retention period of an FSx for ONTAP SnapLock volume. After
+	// it is set, it can't be changed. Files can't be deleted or modified during
+	// the retention period.
+	//
+	// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+	MinimumRetention *RetentionPeriod `json:"minimumRetention,omitempty"`
 }
 
 // A snapshot of an Amazon FSx for OpenZFS volume.
@@ -1304,12 +1492,15 @@ type Snapshot struct {
 	// The time that the resource was created, in seconds (since 1970-01-01T00:00:00Z),
 	// also known as Unix time.
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
+	// Describes why a resource lifecycle state changed.
+	LifecycleTransitionReason *LifecycleTransitionReason `json:"lifecycleTransitionReason,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
 	// see Amazon Resource Names (ARNs) (https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html)
 	// in the Amazon Web Services General Reference.
 	ResourceARN *string `json:"resourceARN,omitempty"`
+	SnapshotID  *string `json:"snapshotID,omitempty"`
 	// A list of Tag values, with a maximum of 50 elements.
 	Tags     []*Tag  `json:"tags,omitempty"`
 	VolumeID *string `json:"volumeID,omitempty"`
@@ -1322,14 +1513,18 @@ type StorageVirtualMachine struct {
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
 	// The globally unique ID of the file system, assigned by Amazon FSx.
 	FileSystemID *string `json:"fileSystemID,omitempty"`
+	// Describes why a resource lifecycle state changed.
+	LifecycleTransitionReason *LifecycleTransitionReason `json:"lifecycleTransitionReason,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
 	// see Amazon Resource Names (ARNs) (https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html)
 	// in the Amazon Web Services General Reference.
-	ResourceARN *string `json:"resourceARN,omitempty"`
+	ResourceARN             *string `json:"resourceARN,omitempty"`
+	StorageVirtualMachineID *string `json:"storageVirtualMachineID,omitempty"`
 	// A list of Tag values, with a maximum of 50 elements.
-	Tags []*Tag `json:"tags,omitempty"`
+	Tags []*Tag  `json:"tags,omitempty"`
+	UUID *string `json:"uuid,omitempty"`
 }
 
 // Describes the Microsoft Active Directory (AD) directory configuration to
@@ -1362,6 +1557,29 @@ type Tag struct {
 	// A string of 0 to 256 characters that specifies the value for a tag. Tag values
 	// can be null and don't have to be unique in a tag set.
 	Value *string `json:"value,omitempty"`
+}
+
+// Describes the data tiering policy for an ONTAP volume. When enabled, Amazon
+// FSx for ONTAP's intelligent tiering automatically transitions a volume's
+// data between the file system's primary storage and capacity pool storage
+// based on your access patterns.
+//
+// Valid tiering policies are the following:
+//
+//   - SNAPSHOT_ONLY - (Default value) moves cold snapshots to the capacity
+//     pool storage tier.
+//
+//   - AUTO - moves cold user data and snapshots to the capacity pool storage
+//     tier based on your access patterns.
+//
+//   - ALL - moves all user data blocks in both the active file system and
+//     Snapshot copies to the storage pool tier.
+//
+//   - NONE - keeps a volume's data in the primary storage tier, preventing
+//     it from being moved to the capacity pool tier.
+type TieringPolicy struct {
+	CoolingPeriod *int64  `json:"coolingPeriod,omitempty"`
+	Name          *string `json:"name,omitempty"`
 }
 
 // The configuration update for an Amazon File Cache resource.
@@ -1550,8 +1768,32 @@ type UpdateFileSystemWindowsConfiguration struct {
 // Used to specify changes to the ONTAP configuration for the volume you are
 // updating.
 type UpdateOntapVolumeConfiguration struct {
-	CopyTagsToBackups        *bool `json:"copyTagsToBackups,omitempty"`
-	StorageEfficiencyEnabled *bool `json:"storageEfficiencyEnabled,omitempty"`
+	CopyTagsToBackups        *bool   `json:"copyTagsToBackups,omitempty"`
+	JunctionPath             *string `json:"junctionPath,omitempty"`
+	SecurityStyle            *string `json:"securityStyle,omitempty"`
+	SizeInBytes              *int64  `json:"sizeInBytes,omitempty"`
+	SizeInMegabytes          *int64  `json:"sizeInMegabytes,omitempty"`
+	SnapshotPolicy           *string `json:"snapshotPolicy,omitempty"`
+	StorageEfficiencyEnabled *bool   `json:"storageEfficiencyEnabled,omitempty"`
+	// Describes the data tiering policy for an ONTAP volume. When enabled, Amazon
+	// FSx for ONTAP's intelligent tiering automatically transitions a volume's
+	// data between the file system's primary storage and capacity pool storage
+	// based on your access patterns.
+	//
+	// Valid tiering policies are the following:
+	//
+	//    * SNAPSHOT_ONLY - (Default value) moves cold snapshots to the capacity
+	//    pool storage tier.
+	//
+	//    * AUTO - moves cold user data and snapshots to the capacity pool storage
+	//    tier based on your access patterns.
+	//
+	//    * ALL - moves all user data blocks in both the active file system and
+	//    Snapshot copies to the storage pool tier.
+	//
+	//    * NONE - keeps a volume's data in the primary storage tier, preventing
+	//    it from being moved to the capacity pool tier.
+	TieringPolicy *TieringPolicy `json:"tieringPolicy,omitempty"`
 }
 
 // Used to specify changes to the OpenZFS configuration for the volume that
@@ -1566,8 +1808,19 @@ type UpdateOpenZFSVolumeConfiguration struct {
 
 // Updates the SnapLock configuration for an existing FSx for ONTAP volume.
 type UpdateSnaplockConfiguration struct {
-	AuditLogVolume          *bool `json:"auditLogVolume,omitempty"`
-	VolumeAppendModeEnabled *bool `json:"volumeAppendModeEnabled,omitempty"`
+	AuditLogVolume *bool `json:"auditLogVolume,omitempty"`
+	// Sets the autocommit period of files in an FSx for ONTAP SnapLock volume,
+	// which determines how long the files must remain unmodified before they're
+	// automatically transitioned to the write once, read many (WORM) state.
+	//
+	// For more information, see Autocommit (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/worm-state.html#worm-state-autocommit).
+	AutocommitPeriod *AutocommitPeriod `json:"autocommitPeriod,omitempty"`
+	PrivilegedDelete *string           `json:"privilegedDelete,omitempty"`
+	// The configuration to set the retention period of an FSx for ONTAP SnapLock
+	// volume. The retention period includes default, maximum, and minimum settings.
+	// For more information, see Working with the retention period in SnapLock (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/snaplock-retention.html).
+	RetentionPeriod         *SnaplockRetentionPeriod `json:"retentionPeriod,omitempty"`
+	VolumeAppendModeEnabled *bool                    `json:"volumeAppendModeEnabled,omitempty"`
 }
 
 // Specifies updates to an FSx for ONTAP storage virtual machine's (SVM) Microsoft
@@ -1587,6 +1840,14 @@ type Volume struct {
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
 	// The globally unique ID of the file system, assigned by Amazon FSx.
 	FileSystemID *string `json:"fileSystemID,omitempty"`
+	Lifecycle    *string `json:"lifecycle,omitempty"`
+	// Describes why a resource lifecycle state changed.
+	LifecycleTransitionReason *LifecycleTransitionReason `json:"lifecycleTransitionReason,omitempty"`
+	Name                      *string                    `json:"name,omitempty"`
+	// The configuration of an Amazon FSx for NetApp ONTAP volume.
+	OntapConfiguration *OntapVolumeConfiguration `json:"ontapConfiguration,omitempty"`
+	// The configuration of an Amazon FSx for OpenZFS volume.
+	OpenZFSConfiguration *OpenZFSVolumeConfiguration `json:"openZFSConfiguration,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
@@ -1594,8 +1855,9 @@ type Volume struct {
 	// in the Amazon Web Services General Reference.
 	ResourceARN *string `json:"resourceARN,omitempty"`
 	// A list of Tag values, with a maximum of 50 elements.
-	Tags     []*Tag  `json:"tags,omitempty"`
-	VolumeID *string `json:"volumeID,omitempty"`
+	Tags       []*Tag  `json:"tags,omitempty"`
+	VolumeID   *string `json:"volumeID,omitempty"`
+	VolumeType *string `json:"volumeType,omitempty"`
 }
 
 // The configuration that Amazon FSx for Windows File Server uses to audit and
