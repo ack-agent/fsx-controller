@@ -76,6 +76,17 @@ BACKUP_MODIFY_PERIOD_LENGTH = 15
 # DeleteBackup returns instantly and the backup leaves DescribeBackups.
 BACKUP_DELETE_WAIT_PERIODS = 20
 BACKUP_DELETE_PERIOD_LENGTH = 15
+# Rejecting an immutable edit, and converging again once it is reverted, takes
+# one reconcile each.
+IMMUTABLE_WAIT_PERIODS = 20
+IMMUTABLE_PERIOD_LENGTH = 15
+# Adopting an existing AVAILABLE backup needs only a read.
+ADOPT_WAIT_PERIODS = 40
+ADOPT_PERIOD_LENGTH = 15
+
+# Well-formed (matches ^(fsvol-[0-9a-f]{17,})$) but not a real volume. A Lustre
+# file-system backup has no Volume, so any declared volumeID is a delta.
+UNMANAGED_VOLUME_ID = "fsvol-0123456789abcdef0"
 
 
 def _wait_for_backup_synced(ref, wait_periods, period_length):
@@ -217,6 +228,10 @@ class TestBackup:
         validator = BackupValidator(fsx_client)
         self._assert_created(ref, validator, file_system_id, backup_id)
         self._update_tags_and_assert(ref, validator, backup_id)
+        self._immutable_volume_id_round_trip(
+            ref, validator, file_system_id, backup_id,
+        )
+        self._adopt_and_assert(validator, file_system_id, backup_id)
         self._delete_and_assert(ref, validator, backup_id)
 
     def _assert_created(self, ref, validator, file_system_id, backup_id):
@@ -291,6 +306,101 @@ class TestBackup:
             expected=UPDATED_TAGS, actual=cr["spec"]["tags"],
             key_member_name="key", value_member_name="value",
         )
+
+    def _immutable_volume_id_round_trip(
+        self, ref, validator, file_system_id, backup_id,
+    ):
+        """Declaring volumeID after create passes the CRD's self == oldSelf
+        rule (transition rules skip an absent old value), so the controller's
+        convergence check must catch it: FSx reports no Volume for this
+        file-system backup, the delta carries Spec.VolumeID, and the update
+        goes Terminal without calling any API. Removing the field again must
+        bring the CR back to Synced.
+        """
+        k8s.patch_custom_resource(ref, {"spec": {"volumeID": UNMANAGED_VOLUME_ID}})
+        time.sleep(MODIFY_WAIT_AFTER_SECONDS)
+
+        assert k8s.wait_on_condition(
+            ref, condition.CONDITION_TYPE_TERMINAL, "True",
+            wait_periods=IMMUTABLE_WAIT_PERIODS,
+            period_length=IMMUTABLE_PERIOD_LENGTH,
+        )
+        cr = k8s.get_resource(ref)
+        by_type = {c["type"]: c for c in cr["status"].get("conditions") or []}
+        terminal = by_type[condition.CONDITION_TYPE_TERMINAL]
+        assert "Spec.VolumeID" in (terminal.get("message") or ""), terminal
+        synced = by_type.get(condition.CONDITION_TYPE_RESOURCE_SYNCED)
+        assert synced is None or synced.get("status") != "True", synced
+
+        # The backup itself is untouched.
+        aws_backup = validator.get(backup_id)
+        assert aws_backup is not None
+        assert aws_backup["Lifecycle"] == "AVAILABLE"
+        assert aws_backup.get("Volume") is None
+        assert aws_backup["FileSystem"]["FileSystemId"] == file_system_id
+
+        # A merge patch with None removes the field.
+        k8s.patch_custom_resource(ref, {"spec": {"volumeID": None}})
+        time.sleep(MODIFY_WAIT_AFTER_SECONDS)
+
+        assert k8s.wait_on_condition(
+            ref, condition.CONDITION_TYPE_RESOURCE_SYNCED, "True",
+            wait_periods=IMMUTABLE_WAIT_PERIODS,
+            period_length=IMMUTABLE_PERIOD_LENGTH,
+        )
+        cr = k8s.get_resource(ref)
+        for c in cr["status"].get("conditions") or []:
+            if c["type"] == condition.CONDITION_TYPE_TERMINAL:
+                assert c["status"] != "True", c.get("message")
+        # Fails here, rather than passing vacuously, if the patch was a no-op.
+        assert "volumeID" not in cr["spec"]
+
+        # The rejected edit sent nothing: tags are as the last update left them.
+        aws_tags = validator.get_tags(backup_id)
+        tags.assert_ack_system_tags(tags=aws_tags)
+        tags.assert_equal_without_ack_tags(expected=UPDATED_TAGS, actual=aws_tags)
+
+    def _adopt_and_assert(self, validator, file_system_id, backup_id):
+        """Adopts the same backup by ID into a second CR that declares neither
+        source ID; the controller must fill spec.fileSystemID from FSx. The
+        retain deletion policy leaves the backup for the original CR's delete.
+        """
+        adopted_name = random_suffix_name("ack-fsx-backup-adopt", 32)
+        replacements = REPLACEMENT_VALUES.copy()
+        replacements["ADOPTED_BACKUP_NAME"] = adopted_name
+        replacements["BACKUP_ID"] = backup_id
+
+        resource_data = load_fsx_resource(
+            "backup_adoption", additional_replacements=replacements,
+        )
+        logging.debug(resource_data)
+
+        adopted_ref = k8s.CustomResourceReference(
+            CRD_GROUP, CRD_VERSION, BACKUP_RESOURCE_PLURAL,
+            adopted_name, namespace="default",
+        )
+        k8s.create_custom_resource(adopted_ref, resource_data)
+
+        try:
+            k8s.wait_resource_consumed_by_controller(adopted_ref)
+            _wait_for_backup_synced(
+                adopted_ref,
+                wait_periods=ADOPT_WAIT_PERIODS,
+                period_length=ADOPT_PERIOD_LENGTH,
+            )
+            cr = k8s.get_resource(adopted_ref)
+            assert cr["status"]["id"] == backup_id
+            assert cr["spec"]["fileSystemID"] == file_system_id
+            assert "volumeID" not in cr["spec"]
+            assert cr["status"]["fileSystem"]["fileSystemID"] == file_system_id
+        finally:
+            _delete_cr(
+                adopted_ref,
+                BACKUP_DELETE_WAIT_PERIODS, BACKUP_DELETE_PERIOD_LENGTH,
+            )
+
+        # deletion-policy: retain must leave the backup in place.
+        assert validator.get(backup_id) is not None
 
     def _delete_and_assert(self, ref, validator, backup_id):
         _delete_cr(ref, BACKUP_DELETE_WAIT_PERIODS, BACKUP_DELETE_PERIOD_LENGTH)
