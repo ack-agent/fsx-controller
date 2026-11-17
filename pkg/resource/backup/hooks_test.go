@@ -29,6 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	svcsdk "github.com/aws/aws-sdk-go-v2/service/fsx"
 	svcsdktypes "github.com/aws/aws-sdk-go-v2/service/fsx/types"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	svcapitypes "github.com/aws-controllers-k8s/fsx-controller/apis/v1alpha1"
 )
@@ -211,23 +212,30 @@ func TestRecoverObservedSourceIDs(t *testing.T) {
 			wantVol: observedVol,
 		},
 		{
-			name:   "undeclared fields are never filled",
-			spec:   svcapitypes.BackupSpec{},
-			resp:   resp(aws.String(observedFS), aws.String(observedVol)),
-			wantFS: "<nil>", wantVol: "<nil>",
+			name:    "neither declared (adoption) fills both observed IDs",
+			spec:    svcapitypes.BackupSpec{},
+			resp:    resp(aws.String(observedFS), aws.String(observedVol)),
+			wantFS:  observedFS,
+			wantVol: observedVol,
 		},
 		{
-			name:    "nil nested structs keep the copied value",
+			name:   "neither declared, file-system backup fills only FileSystemID",
+			spec:   svcapitypes.BackupSpec{},
+			resp:   resp(aws.String(observedFS), nil),
+			wantFS: observedFS, wantVol: "<nil>",
+		},
+		{
+			name:    "nil nested structs clear declared fields",
 			spec:    svcapitypes.BackupSpec{FileSystemID: aws.String(declaredFS), VolumeID: aws.String(declaredVol)},
 			resp:    resp(nil, nil),
-			wantFS:  declaredFS,
-			wantVol: declaredVol,
+			wantFS:  "<nil>",
+			wantVol: "<nil>",
 		},
 		{
-			name:   "nil nested IDs keep the copied value",
+			name:   "nil nested IDs clear declared fields",
 			spec:   svcapitypes.BackupSpec{FileSystemID: aws.String(declaredFS)},
 			resp:   &svcsdk.DescribeBackupsOutput{Backups: []svcsdktypes.Backup{{FileSystem: &svcsdktypes.FileSystem{}}}},
-			wantFS: declaredFS, wantVol: "<nil>",
+			wantFS: "<nil>", wantVol: "<nil>",
 		},
 		{
 			name:   "empty response",
@@ -259,4 +267,60 @@ func TestRecoverObservedSourceIDs(t *testing.T) {
 	// Nil desired/ko must not panic.
 	recoverObservedSourceIDs(nil, resp(aws.String(observedFS), nil), &svcapitypes.Backup{})
 	recoverObservedSourceIDs(newBackup(svcapitypes.BackupSpec{}), resp(nil, nil), nil)
+}
+
+func TestTerminalIfFailed(t *testing.T) {
+	withLifecycle := func(lc *string) *svcapitypes.Backup {
+		return &svcapitypes.Backup{Status: svcapitypes.BackupStatus{Lifecycle: lc}}
+	}
+	failedWithDetails := withLifecycle(aws.String("FAILED"))
+	failedWithDetails.Status.FailureDetails = &svcapitypes.BackupFailureDetails{
+		Message: aws.String("source file system is unavailable"),
+	}
+	failedDeleting := withLifecycle(aws.String("FAILED"))
+	now := metav1.Now()
+	failedDeleting.DeletionTimestamp = &now
+
+	tests := []struct {
+		name         string
+		ko           *svcapitypes.Backup
+		wantTerminal bool
+		wantMsg      string
+	}{
+		{name: "nil ko", ko: nil},
+		{name: "nil lifecycle", ko: withLifecycle(nil)},
+		{name: "available", ko: withLifecycle(aws.String("AVAILABLE"))},
+		{name: "creating", ko: withLifecycle(aws.String("CREATING"))},
+		{
+			name:         "failed with details",
+			ko:           failedWithDetails,
+			wantTerminal: true,
+			wantMsg:      "source file system is unavailable",
+		},
+		{
+			name:         "failed without details",
+			ko:           withLifecycle(aws.String("FAILED")),
+			wantTerminal: true,
+			wantMsg:      "no failure details reported",
+		},
+		{name: "failed while deleting", ko: failedDeleting},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := terminalIfFailed(tt.ko)
+			if !tt.wantTerminal {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			var terminal *ackerr.TerminalError
+			if !errors.As(err, &terminal) {
+				t.Fatalf("error is %T, want *ackerr.TerminalError: %v", err, err)
+			}
+			if !strings.Contains(err.Error(), tt.wantMsg) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantMsg)
+			}
+		})
+	}
 }

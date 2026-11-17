@@ -80,7 +80,7 @@ BACKUP_DELETE_PERIOD_LENGTH = 15
 
 def _wait_for_backup_synced(ref, wait_periods, period_length):
     """wait_for_synced_or_terminal, but also fails as soon as the backup
-    reports FAILED (which the controller leaves retryable) and surfaces FSx's
+    reports FAILED (which the controller marks Terminal) and surfaces FSx's
     FailureDetails.
     """
     for _ in range(wait_periods):

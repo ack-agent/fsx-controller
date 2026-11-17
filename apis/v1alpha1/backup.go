@@ -135,7 +135,7 @@ type BackupStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="ID",type=string,priority=0,JSONPath=`.status.id`
-// +kubebuilder:printcolumn:name="FILESYSTEM",type=string,priority=0,JSONPath=`.spec.fileSystemID`
+// +kubebuilder:printcolumn:name="FILESYSTEM",type=string,priority=0,JSONPath=`.status.fileSystem.fileSystemID`
 // +kubebuilder:printcolumn:name="TYPE",type=string,priority=0,JSONPath=`.status.type`
 // +kubebuilder:printcolumn:name="STATE",type=string,priority=0,JSONPath=`.status.lifecycle`
 // +kubebuilder:printcolumn:name="PROGRESS",type=integer,priority=1,JSONPath=`.status.progressPercent`

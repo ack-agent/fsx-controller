@@ -66,16 +66,18 @@ resources:
             BackupId: ID
     hooks:
       # DescribeBackups reports the source IDs only nested (FileSystem.FileSystemId,
-      # Volume.VolumeId); recover the observed values for declared fields so a
-      # change stays visible in the delta.
+      # Volume.VolumeId); declared fields take the observed value (including
+      # absence) so a change stays visible in the delta, and an adopted Backup
+      # (neither declared) gets both filled. FAILED (documented as final) is
+      # Terminal with Status.FailureDetails.
       sdk_read_many_post_set_output:
         template_path: hooks/backup/sdk_read_many_post_set_output.go.tpl
     # Tags round-trip via DescribeBackups; synced from customUpdateBackup.
     tags:
       ignore: false
     # CREATING, PENDING, TRANSFERRING and COPYING requeue until AVAILABLE.
-    # Known gap: FAILED cannot be declared terminal here either; it requeues
-    # with Status.FailureDetails explaining why.
+    # FAILED is final; the read hook makes it Terminal with
+    # Status.FailureDetails.
     synced:
       when:
         - path: Status.Lifecycle
@@ -130,7 +132,7 @@ resources:
           type: string
           index: 10
         - name: FILESYSTEM
-          json_path: .spec.fileSystemID
+          json_path: .status.fileSystem.fileSystemID
           type: string
           index: 15
         - name: TYPE
