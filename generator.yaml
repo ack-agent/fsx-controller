@@ -82,11 +82,21 @@ resources:
       when:
         - path: Status.Lifecycle
           in: [ "AVAILABLE" ]
-    # No terminal_codes: BadRequest is the catch-all; FileSystemNotFound,
-    # VolumeNotFound and UnsupportedOperation are fixed only through the
-    # immutable source IDs or the source's own configuration;
-    # BackupInProgress/ServiceLimitExceeded are external;
-    # IncompatibleParameterError is an idempotency-token clash. Delete-time
+    # No terminal_codes: a terminal condition stops the requeue, so only codes
+    # fixable by editing this Spec belong here, and besides Tags the only
+    # CreateBackup inputs are the immutable FileSystemId/VolumeId.
+    # UnsupportedOperation is raised by the source's own state or configuration
+    # (e.g. a Lustre file system linked to a data repository, a SCRATCH
+    # deployment, an ONTAP file-system-level backup), which no edit to this
+    # Spec clears, so it stays retryable. FileSystemNotFound/VolumeNotFound stay
+    # retryable because an ID copied from a just-created source (e.g. kro or
+    # GitOps passing a status field) may briefly return NotFound; FSx assigns
+    # IDs, so a wrong literal ID is not fixed by creating the source, and
+    # fileSystemRef resolution already waits for a Synced FileSystem. A retry
+    # backs off with the error still visible in the condition. BadRequest is
+    # the catch-all; BackupInProgress/ServiceLimitExceeded are external;
+    # IncompatibleParameterError is an idempotency-token clash (ClientRequestToken
+    # is never set, so the SDK sends a fresh one each call). Delete-time
     # BackupInProgress/BackupBeingCopied/BackupRestoring are left retryable.
     exceptions:
       errors:
