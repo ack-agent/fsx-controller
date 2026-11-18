@@ -13,13 +13,9 @@
 
 """Integration tests for the FSx Backup resource.
 
-A user-initiated Lustre backup needs a PERSISTENT file system that is not
-linked to a data repository, so the module stands up its own PERSISTENT_2
-FileSystem CR from the shared file_system template (it does not share the DRA
-test's file system) and points the Backup at it through fileSystemRef.
-
-As with the DRA test, the lifecycle is one test so pytest-xdist cannot reorder
-the steps or build a second 1200 GiB file system per step.
+Lustre backups need a PERSISTENT file system with no data repository, so the
+module creates its own. A single test keeps xdist from reordering steps or
+building a second 1200 GiB file system.
 """
 
 import logging
@@ -65,8 +61,7 @@ FS_CREATE_PERIOD_LENGTH = 30
 FS_DELETE_WAIT_PERIODS = 30
 FS_DELETE_PERIOD_LENGTH = 30
 
-# Lustre backups go PENDING -> CREATING -> TRANSFERRING -> AVAILABLE, which can
-# take well over ten minutes even for an empty file system.
+# Lustre backups can take over ten minutes to reach AVAILABLE, even when empty.
 CREATE_WAIT_AFTER_SECONDS = 30
 BACKUP_CREATE_WAIT_PERIODS = 120
 BACKUP_CREATE_PERIOD_LENGTH = 15
@@ -76,8 +71,7 @@ BACKUP_MODIFY_PERIOD_LENGTH = 15
 # DeleteBackup returns instantly and the backup leaves DescribeBackups.
 BACKUP_DELETE_WAIT_PERIODS = 20
 BACKUP_DELETE_PERIOD_LENGTH = 15
-# Rejecting an immutable edit, and converging again once it is reverted, takes
-# one reconcile each.
+# Rejecting an immutable edit and recovering after revert take one reconcile each.
 IMMUTABLE_WAIT_PERIODS = 20
 IMMUTABLE_PERIOD_LENGTH = 15
 # Adopting an existing AVAILABLE backup needs only a read.
@@ -310,12 +304,8 @@ class TestBackup:
     def _immutable_volume_id_round_trip(
         self, ref, validator, file_system_id, backup_id,
     ):
-        """Declaring volumeID after create passes the CRD's self == oldSelf
-        rule (transition rules skip an absent old value), so the controller's
-        convergence check must catch it: FSx reports no Volume for this
-        file-system backup, the delta carries Spec.VolumeID, and the update
-        goes Terminal without calling any API. Removing the field again must
-        bring the CR back to Synced.
+        """A volumeID added after create slips past the CEL rule (community#3097),
+        so the controller must go Terminal without an API call, then recover on revert.
         """
         k8s.patch_custom_resource(ref, {"spec": {"volumeID": UNMANAGED_VOLUME_ID}})
         time.sleep(MODIFY_WAIT_AFTER_SECONDS)
@@ -361,9 +351,8 @@ class TestBackup:
         tags.assert_equal_without_ack_tags(expected=UPDATED_TAGS, actual=aws_tags)
 
     def _adopt_and_assert(self, validator, file_system_id, backup_id):
-        """Adopts the same backup by ID into a second CR that declares neither
-        source ID; the controller must fill spec.fileSystemID from FSx. The
-        retain deletion policy leaves the backup for the original CR's delete.
+        """Adopts the backup into a CR with no source IDs; the controller must
+        fill spec.fileSystemID. Retain leaves the backup for the original CR.
         """
         adopted_name = random_suffix_name("ack-fsx-backup-adopt", 32)
         replacements = REPLACEMENT_VALUES.copy()

@@ -30,28 +30,10 @@ import (
 	"github.com/aws-controllers-k8s/fsx-controller/pkg/util"
 )
 
-// recoverObservedSourceIDs replaces the copied-from-desired Spec.FileSystemID
-// and Spec.VolumeID with the values DescribeBackups actually reports.
-//
-// DescribeBackups returns the source only nested (FileSystem.FileSystemId,
-// Volume.VolumeId), so code-gen cannot name-match it back and latest would
-// otherwise hold desired's value. A retargeted FileSystemRef, or a VolumeID
-// added after create (which the `self == oldSelf` CEL rule skips, see
-// community#3097), would then compare equal and be ignored while Synced stays
-// True.
-//
-// A declared field takes the observed value, including absence: when FSx
-// omits FileSystem or Volume (e.g. Volume on a Lustre/Windows file-system
-// backup), latest holds nil so a late-added ID still shows up in the delta.
-//
-// When only one field is declared, the other is never filled: a volume backup
-// still reports FileSystem, so filling it would invent a delta.
-//
-// When neither is declared, the Backup is being adopted by Status.ID
-// (CreateBackup needs a FileSystemId or a VolumeId, and ReadOne sees the
-// reference-resolved desired), so both are filled from what FSx reports. On
-// adoption the runtime writes the spec from latest, so this runs once; later
-// reconciles compare both fields as declared.
+// recoverObservedSourceIDs sets Spec.FileSystemID/VolumeID from the nested
+// IDs DescribeBackups reports, so changes the CEL rule misses (community#3097)
+// show up in the delta. A declared field takes the observed value, nil
+// included. When neither is declared (adoption), both are filled.
 func recoverObservedSourceIDs(
 	desired *resource,
 	resp *svcsdk.DescribeBackupsOutput,
@@ -89,14 +71,8 @@ func recoverObservedSourceIDs(
 	}
 }
 
-// terminalIfFailed returns a Terminal error when the backup is FAILED, which
-// FSx documents as "Amazon FSx couldn't finish the backup"; nothing moves a
-// backup out of that state, and the immutable source IDs mean no spec edit
-// can fix it. The returned resource is non-nil so Status (and
-// FailureDetails) is still patched alongside the Terminal condition.
-//
-// Never while the CR is being deleted: the delete path calls ReadOne first and
-// aborts on any error but NotFound, and FAILED backups are deletable.
+// terminalIfFailed returns a Terminal error for a FAILED backup, which FSx
+// never recovers. Skipped during deletion so the delete can still run.
 func terminalIfFailed(ko *svcapitypes.Backup) error {
 	if ko == nil || ko.Status.Lifecycle == nil {
 		return nil
@@ -184,11 +160,7 @@ func (rm *resourceManager) customUpdateBackup(
 	exit := rlog.Trace("rm.customUpdateBackup")
 	defer func() { exit(err) }()
 
-	// Reject anything no API can carry before sending a tag change, so an
-	// edit that mixes tags with an immutable field applies nothing (same order
-	// as customUpdateFileSystem). This is a convergence check: the change
-	// would otherwise be dropped silently and the delta would recur.
-	// Reverting the field clears it.
+	// Reject non-tag changes before any tag call, so a mixed edit applies nothing.
 	if paths := deltaPathsOutsideTags(delta); len(paths) > 0 {
 		return nil, ackerr.NewTerminalError(fmt.Errorf(
 			"cannot apply changes to %s: FSx backups cannot be modified after "+

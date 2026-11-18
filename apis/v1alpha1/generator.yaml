@@ -65,11 +65,8 @@ resources:
           input_fields:
             BackupId: ID
     hooks:
-      # DescribeBackups reports the source IDs only nested (FileSystem.FileSystemId,
-      # Volume.VolumeId); declared fields take the observed value (including
-      # absence) so a change stays visible in the delta, and an adopted Backup
-      # (neither declared) gets both filled. FAILED (documented as final) is
-      # Terminal with Status.FailureDetails.
+      # Recovers the nested source IDs DescribeBackups reports so changes stay
+      # in the delta, and makes FAILED (final) Terminal.
       sdk_read_many_post_set_output:
         template_path: hooks/backup/sdk_read_many_post_set_output.go.tpl
     # Tags round-trip via DescribeBackups; synced from customUpdateBackup.
@@ -82,22 +79,9 @@ resources:
       when:
         - path: Status.Lifecycle
           in: [ "AVAILABLE" ]
-    # No terminal_codes: a terminal condition stops the requeue, so only codes
-    # fixable by editing this Spec belong here, and besides Tags the only
-    # CreateBackup inputs are the immutable FileSystemId/VolumeId.
-    # UnsupportedOperation is raised by the source's own state or configuration
-    # (e.g. a Lustre file system linked to a data repository, a SCRATCH
-    # deployment, an ONTAP file-system-level backup), which no edit to this
-    # Spec clears, so it stays retryable. FileSystemNotFound/VolumeNotFound stay
-    # retryable because an ID copied from a just-created source (e.g. kro or
-    # GitOps passing a status field) may briefly return NotFound; FSx assigns
-    # IDs, so a wrong literal ID is not fixed by creating the source, and
-    # fileSystemRef resolution already waits for a Synced FileSystem. A retry
-    # backs off with the error still visible in the condition. BadRequest is
-    # the catch-all; BackupInProgress/ServiceLimitExceeded are external;
-    # IncompatibleParameterError is an idempotency-token clash (ClientRequestToken
-    # is never set, so the SDK sends a fresh one each call). Delete-time
-    # BackupInProgress/BackupBeingCopied/BackupRestoring are left retryable.
+    # No terminal_codes: besides Tags, CreateBackup takes only the immutable
+    # source IDs, so no Spec edit can clear an error. FileSystemNotFound and
+    # VolumeNotFound can also be transient right after the source is created.
     exceptions:
       errors:
         404:
@@ -110,20 +94,15 @@ resources:
       # Without go_tag the Go-keyword escape would serialize this as `type_`.
       Type:
         go_tag: json:"type,omitempty"
-      # Same keyword escape on SnapLock shapes first reached through
-      # Status.Volume (new with this CRD). RetentionPeriod is one shape shared
-      # by Default/Maximum/MinimumRetention. OpenZFSUserOrGroupQuota.Type stays
-      # `type_`: that shape is shared with the released FileSystem CRD, where
-      # renaming it would be a breaking change.
+      # Same keyword escape for SnapLock shapes (RetentionPeriod is one shared
+      # shape). OpenZFSUserOrGroupQuota.Type stays `type_`: it is shared with
+      # the released FileSystem CRD.
       Volume.OntapConfiguration.SnaplockConfiguration.AutocommitPeriod.Type:
         go_tag: json:"type,omitempty"
       Volume.OntapConfiguration.SnaplockConfiguration.RetentionPeriod.DefaultRetention.Type:
         go_tag: json:"type,omitempty"
-      # Create-only: there is no Update API.
-      # Known gap (community#3097): the CEL rule is skipped when the old value
-      # is absent and cannot see FileSystemRef changes; the read hook recovers
-      # the observed IDs, so the delta stays visible and customUpdateBackup
-      # rejects it.
+      # Create-only. The CEL rule misses some changes (community#3097); the
+      # read hook recovers the observed IDs so customUpdateBackup rejects them.
       FileSystemId:
         is_immutable: true
         references:
