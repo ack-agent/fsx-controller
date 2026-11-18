@@ -24,7 +24,7 @@ from acktest.k8s import resource as k8s
 from botocore.exceptions import ClientError
 
 
-# The only errors get_file_system translates to None.
+# Not-found codes FSxValidator maps to None.
 NOT_FOUND_ERROR_CODES = frozenset(
     ("FileSystemNotFound", "ResourceNotFoundException")
 )
@@ -70,11 +70,122 @@ def wait_for_synced_or_terminal(
     )
 
 
-class FSxValidator:
-    def __init__(self, fsx_client):
-        self.fsx_client = fsx_client
+class FSxResourceValidator:
+    """Shared Describe-based validator for FSx resources.
 
-    def get_file_system(self, file_system_id: str) -> Optional[dict]:
+    Subclasses supply the describe call for a single ID, the error codes that
+    mean "not found", a log label and their default wait_until_gone periods.
+    """
+
+    def __init__(
+        self,
+        fsx_client,
+        describe,
+        not_found_error_codes: frozenset,
+        label: str,
+        gone_wait_periods: int,
+        gone_period_length: int,
+    ):
+        self.fsx_client = fsx_client
+        # describe(resource_id) -> list of matching items from the response.
+        self._describe = describe
+        self._not_found_error_codes = not_found_error_codes
+        self._label = label
+        self._gone_wait_periods = gone_wait_periods
+        self._gone_period_length = gone_period_length
+
+    def get(self, resource_id: str) -> Optional[dict]:
+        """Returns the resource with the supplied ID, or None once FSx no
+        longer reports it. Any error other than not-found is re-raised, so a
+        transient failure cannot pass for a completed delete.
+        """
+        try:
+            items = self._describe(resource_id)
+            if len(items) == 0:
+                return None
+            return items[0]
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code in self._not_found_error_codes:
+                return None
+            logging.error(
+                f"describe {self._label}({resource_id}) failed with {code}"
+            )
+            raise
+
+    def get_tags(self, resource_id: str) -> Dict[str, str]:
+        item = self.get(resource_id)
+        if item is None:
+            return {}
+        return {t["Key"]: t["Value"] for t in item.get("Tags", [])}
+
+    def wait_until(
+        self,
+        resource_id: str,
+        predicate,
+        description: str,
+        wait_periods: int = 40,
+        period_length: int = 15,
+    ) -> bool:
+        """Polls Describe until predicate(item) is true.
+
+        Synced may still be True from the pre-update reconcile when a test
+        looks at it, so the AWS API is the reliable signal an update landed.
+        """
+        for _ in range(wait_periods):
+            item = self.get(resource_id)
+            if item is not None and predicate(item):
+                return True
+            logging.info(
+                f"{self._label} {resource_id} not yet {description}; "
+                f"lifecycle {None if item is None else item.get('Lifecycle')}"
+            )
+            time.sleep(period_length)
+        return False
+
+    def wait_until_gone(
+        self,
+        resource_id: str,
+        wait_periods: Optional[int] = None,
+        period_length: Optional[int] = None,
+    ) -> bool:
+        """Polls Describe until the resource disappears. Defaults to the
+        subclass's wait periods when none are supplied.
+        """
+        if wait_periods is None:
+            wait_periods = self._gone_wait_periods
+        if period_length is None:
+            period_length = self._gone_period_length
+        for _ in range(wait_periods):
+            item = self.get(resource_id)
+            if item is None:
+                return True
+            logging.info(
+                f"{self._label} {resource_id} still present in state "
+                f"{item.get('Lifecycle')}; waiting"
+            )
+            time.sleep(period_length)
+        return self.get(resource_id) is None
+
+
+class FSxValidator(FSxResourceValidator):
+    # FSx keeps a file system in the DELETING lifecycle state for several
+    # minutes after DeleteFileSystem returns, so "deleted from Kubernetes" is
+    # not the same as "deleted in AWS"; hence the longer wait_until_gone
+    # defaults (40 x 30s).
+    def __init__(self, fsx_client):
+        super().__init__(
+            fsx_client,
+            describe=lambda i: fsx_client.describe_file_systems(
+                FileSystemIds=[i],
+            ).get("FileSystems", []),
+            not_found_error_codes=NOT_FOUND_ERROR_CODES,
+            label="file system",
+            gone_wait_periods=40,
+            gone_period_length=30,
+        )
+
+    def get(self, file_system_id: str) -> Optional[dict]:
         """Returns the FSx FileSystem with the supplied ID, or None if it does
         not exist (or has already been fully deleted).
 
@@ -85,10 +196,7 @@ class FSxValidator:
         multi-hundred-GiB file system is still running and billing.
         """
         try:
-            resp = self.fsx_client.describe_file_systems(
-                FileSystemIds=[file_system_id],
-            )
-            file_systems = resp.get("FileSystems", [])
+            file_systems = self._describe(file_system_id)
             if len(file_systems) == 0:
                 return None
             return file_systems[0]
@@ -105,6 +213,9 @@ class FSxValidator:
             )
             raise
 
+    def get_file_system(self, file_system_id: str) -> Optional[dict]:
+        return self.get(file_system_id)
+
     def file_system_exists(self, file_system_id: str) -> bool:
         return self.get_file_system(file_system_id) is not None
 
@@ -113,12 +224,6 @@ class FSxValidator:
         if fs is None:
             return None
         return fs.get("Lifecycle")
-
-    def get_tags(self, file_system_id: str) -> Dict[str, str]:
-        fs = self.get_file_system(file_system_id)
-        if fs is None:
-            return {}
-        return {t["Key"]: t["Value"] for t in fs.get("Tags", [])}
 
     def wait_until_lustre_maintenance_window(
         self,
@@ -175,104 +280,38 @@ class FSxValidator:
             time.sleep(period_length)
         return False
 
-    def wait_until_gone(
-        self,
-        file_system_id: str,
-        wait_periods: int = 40,
-        period_length: int = 30,
-    ) -> bool:
-        """Polls DescribeFileSystems until the file system disappears.
 
-        FSx keeps a file system in the DELETING lifecycle state for several
-        minutes after DeleteFileSystem returns, so "deleted from Kubernetes"
-        is not the same as "deleted in AWS".
-        """
-        for _ in range(wait_periods):
-            fs = self.get_file_system(file_system_id)
-            if fs is None:
-                return True
-            logging.info(
-                f"file system {file_system_id} still present in state "
-                f"{fs.get('Lifecycle')}; waiting"
-            )
-            time.sleep(period_length)
-        return self.get_file_system(file_system_id) is None
-
-
-# The only errors get_data_repository_association translates to None.
+# Not-found codes DataRepositoryAssociationValidator maps to None.
 DRA_NOT_FOUND_ERROR_CODES = frozenset(("DataRepositoryAssociationNotFound",))
 
 
-class DataRepositoryAssociationValidator:
+class DataRepositoryAssociationValidator(FSxResourceValidator):
     def __init__(self, fsx_client):
-        self.fsx_client = fsx_client
+        super().__init__(
+            fsx_client,
+            describe=lambda i: fsx_client.describe_data_repository_associations(
+                AssociationIds=[i],
+            ).get("Associations", []),
+            not_found_error_codes=DRA_NOT_FOUND_ERROR_CODES,
+            label="association",
+            gone_wait_periods=40,
+            gone_period_length=15,
+        )
 
-    def get(self, association_id: str) -> Optional[dict]:
-        """Returns the association with the supplied ID, or None once FSx no
-        longer reports it. Any error other than not-found is re-raised, so a
-        transient failure cannot pass for a completed delete.
-        """
-        try:
-            resp = self.fsx_client.describe_data_repository_associations(
-                AssociationIds=[association_id],
-            )
-            associations = resp.get("Associations", [])
-            if len(associations) == 0:
-                return None
-            return associations[0]
-        except ClientError as e:
-            code = e.response.get("Error", {}).get("Code")
-            if code in DRA_NOT_FOUND_ERROR_CODES:
-                return None
-            logging.error(
-                f"describe_data_repository_associations({association_id}) "
-                f"failed with {code}"
-            )
-            raise
 
-    def get_tags(self, association_id: str) -> Dict[str, str]:
-        dra = self.get(association_id)
-        if dra is None:
-            return {}
-        return {t["Key"]: t["Value"] for t in dra.get("Tags", [])}
+# Not-found codes BackupValidator maps to None.
+BACKUP_NOT_FOUND_ERROR_CODES = frozenset(("BackupNotFound",))
 
-    def wait_until(
-        self,
-        association_id: str,
-        predicate,
-        description: str,
-        wait_periods: int = 40,
-        period_length: int = 15,
-    ) -> bool:
-        """Polls Describe until predicate(association) is true.
 
-        Synced may still be True from the pre-update reconcile when a test
-        looks at it, so the AWS API is the reliable signal an update landed.
-        """
-        for _ in range(wait_periods):
-            dra = self.get(association_id)
-            if dra is not None and predicate(dra):
-                return True
-            logging.info(
-                f"association {association_id} not yet {description}; "
-                f"lifecycle {None if dra is None else dra.get('Lifecycle')}"
-            )
-            time.sleep(period_length)
-        return False
-
-    def wait_until_gone(
-        self,
-        association_id: str,
-        wait_periods: int = 40,
-        period_length: int = 15,
-    ) -> bool:
-        for _ in range(wait_periods):
-            dra = self.get(association_id)
-            if dra is None:
-                return True
-            logging.info(
-                f"association {association_id} still present in state "
-                f"{dra.get('Lifecycle')}; waiting"
-            )
-            time.sleep(period_length)
-        return self.get(association_id) is None
+class BackupValidator(FSxResourceValidator):
+    def __init__(self, fsx_client):
+        super().__init__(
+            fsx_client,
+            describe=lambda i: fsx_client.describe_backups(
+                BackupIds=[i],
+            ).get("Backups", []),
+            not_found_error_codes=BACKUP_NOT_FOUND_ERROR_CODES,
+            label="backup",
+            gone_wait_periods=20,
+            gone_period_length=15,
+        )

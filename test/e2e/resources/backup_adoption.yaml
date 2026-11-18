@@ -1,0 +1,9 @@
+apiVersion: fsx.services.k8s.aws/v1alpha1
+kind: Backup
+metadata:
+  name: $ADOPTED_BACKUP_NAME
+  annotations:
+    services.k8s.aws/adoption-policy: adopt
+    services.k8s.aws/adoption-fields: '{"id": "$BACKUP_ID"}'
+    services.k8s.aws/deletion-policy: retain
+spec: {}

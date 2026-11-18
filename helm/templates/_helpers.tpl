@@ -84,6 +84,7 @@ rules:
 - apiGroups:
   - fsx.services.k8s.aws
   resources:
+  - backups
   - datarepositoryassociations
   - filesystems
   verbs:
@@ -97,6 +98,7 @@ rules:
 - apiGroups:
   - fsx.services.k8s.aws
   resources:
+  - backups/status
   - datarepositoryassociations/status
   - filesystems/status
   verbs:
