@@ -1,0 +1,20 @@
+apiVersion: fsx.services.k8s.aws/v1alpha1
+kind: StorageVirtualMachine
+metadata:
+  name: $SVM_CR_NAME
+spec:
+  fileSystemRef:
+    from:
+      name: $FILE_SYSTEM_NAME
+  name: $SVM_NAME
+  # Set explicitly: DescribeStorageVirtualMachines may omit it, so this
+  # exercises the controller keeping the declared (create-only) value without
+  # a perpetual delta.
+  rootVolumeSecurityStyle: $ROOT_VOLUME_SECURITY_STYLE
+  # No activeDirectoryConfiguration: the e2e environment has no self-managed
+  # AD, and this also checks that a non-AD SVM converges without a delta.
+  tags:
+    - key: $TAG_KEY
+      value: $TAG_VALUE
+    - key: $SECOND_TAG_KEY
+      value: $SECOND_TAG_VALUE

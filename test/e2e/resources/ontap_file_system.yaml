@@ -1,0 +1,16 @@
+apiVersion: fsx.services.k8s.aws/v1alpha1
+kind: FileSystem
+metadata:
+  name: $FILE_SYSTEM_NAME
+spec:
+  type: ONTAP
+  # SINGLE_AZ_1 minimum.
+  storageCapacity: 1024
+  storageType: SSD
+  subnetIDs:
+    - $PRIVATE_SUBNET_ID
+  securityGroupIDs:
+    - $SECURITY_GROUP_ID
+  ontapConfiguration:
+    deploymentType: SINGLE_AZ_1
+    throughputCapacity: 128

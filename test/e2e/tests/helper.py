@@ -315,3 +315,37 @@ class BackupValidator(FSxResourceValidator):
             gone_wait_periods=20,
             gone_period_length=15,
         )
+
+
+# Not-found codes StorageVirtualMachineValidator maps to None.
+SVM_NOT_FOUND_ERROR_CODES = frozenset(("StorageVirtualMachineNotFound",))
+
+
+class StorageVirtualMachineValidator(FSxResourceValidator):
+    def __init__(self, fsx_client):
+        super().__init__(
+            fsx_client,
+            describe=lambda i: fsx_client.describe_storage_virtual_machines(
+                StorageVirtualMachineIds=[i],
+            ).get("StorageVirtualMachines", []),
+            not_found_error_codes=SVM_NOT_FOUND_ERROR_CODES,
+            label="storage virtual machine",
+            gone_wait_periods=40,
+            gone_period_length=15,
+        )
+
+    def get_tags(self, resource_id: str) -> Dict[str, str]:
+        """DescribeStorageVirtualMachines does not report SVM tags, so read
+        them with ListTagsForResource on the SVM's ARN."""
+        item = self.get(resource_id)
+        if item is None:
+            return {}
+        tags = {}
+        kwargs = {"ResourceARN": item["ResourceARN"]}
+        while True:
+            resp = self.fsx_client.list_tags_for_resource(**kwargs)
+            tags.update({t["Key"]: t["Value"] for t in resp.get("Tags", [])})
+            token = resp.get("NextToken")
+            if not token:
+                return tags
+            kwargs["NextToken"] = token

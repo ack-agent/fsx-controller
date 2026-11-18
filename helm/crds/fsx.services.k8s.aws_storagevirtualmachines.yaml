@@ -1,0 +1,443 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: storagevirtualmachines.fsx.services.k8s.aws
+spec:
+  group: fsx.services.k8s.aws
+  names:
+    kind: StorageVirtualMachine
+    listKind: StorageVirtualMachineList
+    plural: storagevirtualmachines
+    singular: storagevirtualmachine
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.id
+      name: ID
+      type: string
+    - jsonPath: .spec.fileSystemID
+      name: FILESYSTEM
+      type: string
+    - jsonPath: .spec.name
+      name: NAME
+      type: string
+    - jsonPath: .status.lifecycle
+      name: STATE
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="ACK.ResourceSynced")].status
+      name: Synced
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: StorageVirtualMachine is the Schema for the StorageVirtualMachines
+          API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              StorageVirtualMachineSpec defines the desired state of StorageVirtualMachine.
+
+              Describes the Amazon FSx for NetApp ONTAP storage virtual machine (SVM) configuration.
+            properties:
+              activeDirectoryConfiguration:
+                description: |-
+                  Describes the self-managed Microsoft Active Directory to which you want to
+                  join the SVM. Joining an Active Directory provides user authentication and
+                  access control for SMB clients, including Microsoft Windows and macOS clients
+                  accessing the file system.
+                properties:
+                  netBiosName:
+                    type: string
+                  selfManagedActiveDirectoryConfiguration:
+                    description: |-
+                      The configuration that Amazon FSx uses to join a FSx for Windows File Server
+                      file system or an FSx for ONTAP storage virtual machine (SVM) to a self-managed
+                      (including on-premises) Microsoft Active Directory (AD) directory. For more
+                      information, see Using Amazon FSx for Windows with your self-managed Microsoft
+                      Active Directory (https://docs.aws.amazon.com/fsx/latest/WindowsGuide/self-managed-AD.html)
+                      or Managing FSx for ONTAP SVMs (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/managing-svms.html).
+                    properties:
+                      administratorsGroup:
+                        type: string
+                      dnsIPs:
+                        items:
+                          type: string
+                        type: array
+                      domainJoinServiceAccountSecret:
+                        type: string
+                      domainJoinServiceAccountSecretRef:
+                        description: Reference field for DomainJoinServiceAccountSecret
+                        properties:
+                          from:
+                            description: |-
+                              AWSResourceReference provides all the values necessary to reference another
+                              k8s resource for finding the identifier(Id/ARN/Name)
+                            properties:
+                              name:
+                                type: string
+                              namespace:
+                                type: string
+                            type: object
+                        type: object
+                      domainName:
+                        type: string
+                      organizationalUnitDistinguishedName:
+                        type: string
+                      password:
+                        description: |-
+                          SecretKeyReference combines a k8s corev1.SecretReference with a
+                          specific key within the referred-to Secret
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: name is unique within a namespace to reference
+                              a secret resource.
+                            type: string
+                          namespace:
+                            description: namespace defines the space within which
+                              the secret name must be unique.
+                            type: string
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      userName:
+                        type: string
+                    type: object
+                type: object
+              fileSystemID:
+                description: 'Regex Pattern: `^(fs-[0-9a-f]{8,})$`'
+                type: string
+                x-kubernetes-validations:
+                - message: Value is immutable once set
+                  rule: self == oldSelf
+              fileSystemRef:
+                description: "AWSResourceReferenceWrapper provides a wrapper around
+                  *AWSResourceReference\ntype to provide more user friendly syntax
+                  for references using 'from' field\nEx:\nAPIIDRef:\n\n\tfrom:\n\t
+                  \ name: my-api"
+                properties:
+                  from:
+                    description: |-
+                      AWSResourceReference provides all the values necessary to reference another
+                      k8s resource for finding the identifier(Id/ARN/Name)
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                    type: object
+                type: object
+              name:
+                description: |-
+                  The name of the SVM.
+
+                  Regex Pattern: `^[^\u0000\u0085\u2028\u2029\r\n]{1,47}$`
+                type: string
+                x-kubernetes-validations:
+                - message: Value is immutable once set
+                  rule: self == oldSelf
+              rootVolumeSecurityStyle:
+                description: |-
+                  The security style of the root volume of the SVM. Specify one of the following
+                  values:
+
+                     * UNIX if the file system is managed by a UNIX administrator, the majority
+                     of users are NFS clients, and an application accessing the data uses a
+                     UNIX user as the service account.
+
+                     * NTFS if the file system is managed by a Microsoft Windows administrator,
+                     the majority of users are SMB clients, and an application accessing the
+                     data uses a Microsoft Windows user as the service account.
+
+                     * MIXED This is an advanced setting. For more information, see Volume
+                     security style (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/volume-security-style.html)
+                     in the Amazon FSx for NetApp ONTAP User Guide.
+                type: string
+                x-kubernetes-validations:
+                - message: Value is immutable once set
+                  rule: self == oldSelf
+              svmAdminPassword:
+                description: |-
+                  The password to use when managing the SVM using the NetApp ONTAP CLI or REST
+                  API. If you do not specify a password, you can still use the file system's
+                  fsxadmin user to manage the SVM.
+
+                  Regex Pattern: `^[^\u0000\u0085\u2028\u2029\r\n]{8,50}$`
+                properties:
+                  key:
+                    description: Key is the key within the secret
+                    type: string
+                  name:
+                    description: name is unique within a namespace to reference a
+                      secret resource.
+                    type: string
+                  namespace:
+                    description: namespace defines the space within which the secret
+                      name must be unique.
+                    type: string
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
+              tags:
+                items:
+                  description: Specifies a key-value pair for a resource tag.
+                  properties:
+                    key:
+                      description: |-
+                        A string of 1 to 128 characters that specifies the key for a tag. Tag keys
+                        must be unique for the resource to which they are attached.
+                      type: string
+                    value:
+                      description: |-
+                        A string of 0 to 256 characters that specifies the value for a tag. Tag values
+                        can be null and don't have to be unique in a tag set.
+                      type: string
+                  type: object
+                type: array
+            required:
+            - name
+            type: object
+          status:
+            description: StorageVirtualMachineStatus defines the observed state of
+              StorageVirtualMachine
+            properties:
+              ackResourceMetadata:
+                description: |-
+                  All CRs managed by ACK have a common `Status.ACKResourceMetadata` member
+                  that is used to contain resource sync state, account ownership,
+                  constructed ARN for the resource
+                properties:
+                  arn:
+                    description: |-
+                      ARN is the Amazon Resource Name for the resource. This is a
+                      globally-unique identifier and is set only by the ACK service controller
+                      once the controller has orchestrated the creation of the resource OR
+                      when it has verified that an "adopted" resource (a resource where the
+                      ARN annotation was set by the Kubernetes user on the CR) exists and
+                      matches the supplied CR's Spec field values.
+                      https://github.com/aws/aws-controllers-k8s/issues/270
+                    type: string
+                  ownerAccountID:
+                    description: |-
+                      OwnerAccountID is the AWS Account ID of the account that owns the
+                      backend AWS service API resource.
+                    type: string
+                  partition:
+                    description: Partition is the AWS partition in which the resource
+                      exists or will exist
+                    type: string
+                  region:
+                    description: Region is the AWS region in which the resource exists
+                      or will exist.
+                    type: string
+                required:
+                - ownerAccountID
+                - region
+                type: object
+              conditions:
+                description: |-
+                  All CRs managed by ACK have a common `Status.Conditions` member that
+                  contains a collection of `ackv1alpha1.Condition` objects that describe
+                  the various terminal states of the CR and its backend AWS service API
+                  resource
+                items:
+                  description: |-
+                    Condition is the common struct used by all CRDs managed by ACK service
+                    controllers to indicate terminal states  of the CR and its backend AWS
+                    service API resource
+                  properties:
+                    lastTransitionTime:
+                      description: Last time the condition transitioned from one status
+                        to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: A human readable message indicating details about
+                        the transition.
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration
+                        is 9, the condition is out of date with respect to the current state of the instance.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: The reason for the condition's last transition.
+                      type: string
+                    status:
+                      description: Status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: Type is the type of the Condition
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+              creationTime:
+                format: date-time
+                type: string
+              endpoints:
+                description: |-
+                  The endpoints that are used to access data or to manage the SVM using the
+                  NetApp ONTAP CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management,
+                  Nfs, and Smb endpoints.
+                properties:
+                  iscsi:
+                    description: |-
+                      An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+                      that are used to access data or to manage the SVM using the NetApp ONTAP
+                      CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+                      and Smb endpoints.
+                    properties:
+                      dnsName:
+                        description: |-
+                          The file system's DNS name. You can mount your file system using its DNS
+                          name.
+                        type: string
+                      ipAddresses:
+                        items:
+                          type: string
+                        type: array
+                      ipv6Addresses:
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  management:
+                    description: |-
+                      An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+                      that are used to access data or to manage the SVM using the NetApp ONTAP
+                      CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+                      and Smb endpoints.
+                    properties:
+                      dnsName:
+                        description: |-
+                          The file system's DNS name. You can mount your file system using its DNS
+                          name.
+                        type: string
+                      ipAddresses:
+                        items:
+                          type: string
+                        type: array
+                      ipv6Addresses:
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  nfs:
+                    description: |-
+                      An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+                      that are used to access data or to manage the SVM using the NetApp ONTAP
+                      CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+                      and Smb endpoints.
+                    properties:
+                      dnsName:
+                        description: |-
+                          The file system's DNS name. You can mount your file system using its DNS
+                          name.
+                        type: string
+                      ipAddresses:
+                        items:
+                          type: string
+                        type: array
+                      ipv6Addresses:
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  smb:
+                    description: |-
+                      An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+                      that are used to access data or to manage the SVM using the NetApp ONTAP
+                      CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+                      and Smb endpoints.
+                    properties:
+                      dnsName:
+                        description: |-
+                          The file system's DNS name. You can mount your file system using its DNS
+                          name.
+                        type: string
+                      ipAddresses:
+                        items:
+                          type: string
+                        type: array
+                      ipv6Addresses:
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+              id:
+                description: |-
+                  The SVM's system generated unique ID.
+
+                  Regex Pattern: `^(svm-[0-9a-f]{17,})$`
+                type: string
+              lifecycle:
+                description: |-
+                  Describes the SVM's lifecycle status.
+
+                     * CREATED - The SVM is fully available for use.
+
+                     * CREATING - Amazon FSx is creating the new SVM.
+
+                     * DELETING - Amazon FSx is deleting an existing SVM.
+
+                     * FAILED - Amazon FSx was unable to create the SVM.
+
+                     * MISCONFIGURED - The SVM is in a failed but recoverable state.
+
+                     * PENDING - Amazon FSx has not started creating the SVM.
+                type: string
+              lifecycleTransitionReason:
+                description: Describes why the SVM lifecycle state changed.
+                properties:
+                  message:
+                    description: A detailed error message.
+                    type: string
+                type: object
+              subtype:
+                description: Describes the SVM's subtype.
+                type: string
+              uuid:
+                description: |-
+                  The SVM's UUID (universally unique identifier).
+
+                  Regex Pattern: `^[^\u0000\u0085\u2028\u2029\r\n]{1,36}$`
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -87,6 +87,7 @@ rules:
   - backups
   - datarepositoryassociations
   - filesystems
+  - storagevirtualmachines
   verbs:
   - create
   - delete
@@ -101,6 +102,7 @@ rules:
   - backups/status
   - datarepositoryassociations/status
   - filesystems/status
+  - storagevirtualmachines/status
   verbs:
   - get
   - patch
@@ -110,6 +112,14 @@ rules:
   resources:
   - keys
   - keys/status
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - secretsmanager.services.k8s.aws
+  resources:
+  - secrets
+  - secrets/status
   verbs:
   - get
   - list

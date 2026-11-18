@@ -29,6 +29,7 @@ import (
 	ackerr "github.com/aws-controllers-k8s/runtime/pkg/errors"
 	ackrt "github.com/aws-controllers-k8s/runtime/pkg/runtime"
 	acktypes "github.com/aws-controllers-k8s/runtime/pkg/types"
+	secretsmanagerapitypes "github.com/aws-controllers-k8s/secretsmanager-controller/apis/v1alpha1"
 
 	svcapitypes "github.com/aws-controllers-k8s/fsx-controller/apis/v1alpha1"
 )
@@ -56,6 +57,9 @@ import (
 
 // +kubebuilder:rbac:groups=ec2.services.k8s.aws,resources=subnets,verbs=get;list
 // +kubebuilder:rbac:groups=ec2.services.k8s.aws,resources=subnets/status,verbs=get;list
+
+// +kubebuilder:rbac:groups=secretsmanager.services.k8s.aws,resources=secrets,verbs=get;list
+// +kubebuilder:rbac:groups=secretsmanager.services.k8s.aws,resources=secrets/status,verbs=get;list
 
 // ClearResolvedReferences removes any reference values that were made
 // concrete in the spec. It returns a copy of the input AWSResource which
@@ -103,6 +107,14 @@ func (rm *resourceManager) ClearResolvedReferences(res acktypes.AWSResource) ack
 	if ko.Spec.WindowsConfiguration != nil {
 		if ko.Spec.WindowsConfiguration.PreferredSubnetRef != nil {
 			ko.Spec.WindowsConfiguration.PreferredSubnetID = nil
+		}
+	}
+
+	if ko.Spec.WindowsConfiguration != nil {
+		if ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration != nil {
+			if ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef != nil {
+				ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret = nil
+			}
 		}
 	}
 
@@ -182,6 +194,19 @@ func (rm *resourceManager) EnsureReferences(
 				latestKO.Spec.WindowsConfiguration.PreferredSubnetRef = desiredKO.Spec.WindowsConfiguration.PreferredSubnetRef
 			}
 		}
+		if desiredKO.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration != nil {
+			if desiredKO.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef != nil {
+				if latestKO.Spec.WindowsConfiguration == nil {
+					latestKO.Spec.WindowsConfiguration = &svcapitypes.CreateFileSystemWindowsConfiguration{}
+				}
+				if latestKO.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration == nil {
+					latestKO.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration = &svcapitypes.SelfManagedActiveDirectoryConfiguration{}
+				}
+				if latestKO.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef == nil {
+					latestKO.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef = desiredKO.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef
+				}
+			}
+		}
 	}
 
 	return &resource{latestKO}
@@ -251,6 +276,12 @@ func (rm *resourceManager) ResolveReferences(
 		resourceHasReferences = resourceHasReferences || fieldHasReferences
 	}
 
+	if fieldHasReferences, err := rm.resolveReferenceForWindowsConfiguration_SelfManagedActiveDirectoryConfiguration_DomainJoinServiceAccountSecret(ctx, apiReader, ko); err != nil {
+		return &resource{ko}, (resourceHasReferences || fieldHasReferences), err
+	} else {
+		resourceHasReferences = resourceHasReferences || fieldHasReferences
+	}
+
 	return &resource{ko}, resourceHasReferences, err
 }
 
@@ -300,6 +331,14 @@ func validateReferenceFields(ko *svcapitypes.FileSystem) error {
 	if ko.Spec.WindowsConfiguration != nil {
 		if ko.Spec.WindowsConfiguration.PreferredSubnetRef != nil && ko.Spec.WindowsConfiguration.PreferredSubnetID != nil {
 			return ackerr.ResourceReferenceAndIDNotSupportedFor("WindowsConfiguration.PreferredSubnetID", "WindowsConfiguration.PreferredSubnetRef")
+		}
+	}
+
+	if ko.Spec.WindowsConfiguration != nil {
+		if ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration != nil {
+			if ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef != nil && ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret != nil {
+				return ackerr.ResourceReferenceAndIDNotSupportedFor("WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret", "WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef")
+			}
 		}
 	}
 	return nil
@@ -821,4 +860,96 @@ func (rm *resourceManager) resolveReferenceForWindowsConfiguration_PreferredSubn
 	}
 
 	return hasReferences, nil
+}
+
+// resolveReferenceForWindowsConfiguration_SelfManagedActiveDirectoryConfiguration_DomainJoinServiceAccountSecret reads the resource referenced
+// from WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef field and sets the WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret
+// from referenced resource. Returns a boolean indicating whether a reference
+// contains references, or an error
+func (rm *resourceManager) resolveReferenceForWindowsConfiguration_SelfManagedActiveDirectoryConfiguration_DomainJoinServiceAccountSecret(
+	ctx context.Context,
+	apiReader client.Reader,
+	ko *svcapitypes.FileSystem,
+) (hasReferences bool, err error) {
+	if ko.Spec.WindowsConfiguration != nil {
+		if ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration != nil {
+			if ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef != nil && ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef.From != nil {
+				hasReferences = true
+				arr := ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef.From
+				if arr.Name == nil || *arr.Name == "" {
+					return hasReferences, fmt.Errorf("provided resource reference is nil or empty: WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecretRef")
+				}
+				namespace, _, err := ackrt.ValidateCrossNamespaceReference(
+					rm.cfg.EnableCrossNamespace,
+					ko.ObjectMeta.GetNamespace(),
+					arr.Namespace,
+					*arr.Name,
+				)
+				if err != nil {
+					return hasReferences, err
+				}
+				obj := &secretsmanagerapitypes.Secret{}
+				if err := getReferencedResourceState_Secret(ctx, apiReader, obj, *arr.Name, namespace); err != nil {
+					return hasReferences, err
+				}
+				ko.Spec.WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret = (*string)(obj.Status.ACKResourceMetadata.ARN)
+			}
+		}
+	}
+
+	return hasReferences, nil
+}
+
+// getReferencedResourceState_Secret looks up whether a referenced resource
+// exists and is in a ACK.ResourceSynced=True state. If the referenced resource does exist and is
+// in a Synced state, returns nil, otherwise returns `ackerr.ResourceReferenceTerminalFor` or
+// `ResourceReferenceNotSyncedFor` depending on if the resource is in a Terminal state.
+func getReferencedResourceState_Secret(
+	ctx context.Context,
+	apiReader client.Reader,
+	obj *secretsmanagerapitypes.Secret,
+	name string, // the Kubernetes name of the referenced resource
+	namespace string, // the Kubernetes namespace of the referenced resource
+) error {
+	namespacedName := types.NamespacedName{
+		Namespace: namespace,
+		Name:      name,
+	}
+	err := apiReader.Get(ctx, namespacedName, obj)
+	if err != nil {
+		return err
+	}
+	var refResourceTerminal bool
+	for _, cond := range obj.Status.Conditions {
+		if cond.Type == ackv1alpha1.ConditionTypeTerminal &&
+			cond.Status == corev1.ConditionTrue {
+			return ackerr.ResourceReferenceTerminalFor(
+				"Secret",
+				namespace, name)
+		}
+	}
+	if refResourceTerminal {
+		return ackerr.ResourceReferenceTerminalFor(
+			"Secret",
+			namespace, name)
+	}
+	var refResourceSynced bool
+	for _, cond := range obj.Status.Conditions {
+		if cond.Type == ackv1alpha1.ConditionTypeResourceSynced &&
+			cond.Status == corev1.ConditionTrue {
+			refResourceSynced = true
+		}
+	}
+	if !refResourceSynced {
+		return ackerr.ResourceReferenceNotSyncedFor(
+			"Secret",
+			namespace, name)
+	}
+	if obj.Status.ACKResourceMetadata == nil || obj.Status.ACKResourceMetadata.ARN == nil {
+		return ackerr.ResourceReferenceMissingTargetFieldFor(
+			"Secret",
+			namespace, name,
+			"Status.ACKResourceMetadata.ARN")
+	}
+	return nil
 }

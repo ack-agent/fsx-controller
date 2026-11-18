@@ -19,6 +19,7 @@ rules:
   - backups
   - datarepositoryassociations
   - filesystems
+  - storagevirtualmachines
   verbs:
   - create
   - delete
@@ -33,6 +34,7 @@ rules:
   - backups
   - datarepositoryassociations
   - filesystems
+  - storagevirtualmachines
   verbs:
   - get
   - patch
