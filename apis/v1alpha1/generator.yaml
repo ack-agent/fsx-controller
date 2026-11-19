@@ -580,14 +580,18 @@ resources:
           path: Status.ID
       Name:
         is_immutable: true
-      # Create-only (not in UpdateStorageVirtualMachineInput). e2e showed
-      # DescribeStorageVirtualMachines omits it for an SVM created without
-      # one, so late_initialize has nothing to copy and is not used. The
-      # Create/Update responses are ignored and the read hook restores the
-      # declared value when Describe leaves it empty (restoreRootVolumeSecurityStyle);
-      # an observed value is kept as-is.
+      # Create-only (not in UpdateStorageVirtualMachineInput). When the Spec
+      # omits it and Describe reports one (the FSx default), late_initialize
+      # copies the observed value into the Spec so no delta (and no no-op
+      # UpdateStorageVirtualMachine) recurs. e2e showed Describe can omit it
+      # for an SVM created without one, so skip_incomplete_check keeps that
+      # case from requeueing forever. The Create/Update responses are ignored
+      # and the read hook restores the declared value when Describe leaves it
+      # empty (restoreRootVolumeSecurityStyle); an observed value is kept as-is.
       RootVolumeSecurityStyle:
         is_immutable: true
+        late_initialize:
+          skip_incomplete_check: {}
         set:
           - method: Create
             ignore: true

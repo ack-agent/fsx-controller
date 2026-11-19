@@ -41,6 +41,7 @@ from e2e.replacement_values import REPLACEMENT_VALUES
 from e2e.tests.helper import (
     FSxValidator,
     StorageVirtualMachineValidator,
+    get_controller_api_call_count,
     wait_for_synced_or_terminal,
 )
 
@@ -75,9 +76,6 @@ SVM_MODIFY_WAIT_PERIODS = 40
 SVM_MODIFY_PERIOD_LENGTH = 15
 SVM_DELETE_WAIT_PERIODS = 60
 SVM_DELETE_PERIOD_LENGTH = 15
-# Long enough for at least one more reconcile after Synced (the runtime
-# resyncs on every event and on the requeue period).
-STEADY_STATE_SECONDS = 90
 
 
 def _delete_cr(ref, wait_periods, period_length):
@@ -186,8 +184,11 @@ class TestStorageVirtualMachine:
         (ref, file_system_id, svm_id, svm_name) = storage_virtual_machine
         validator = StorageVirtualMachineValidator(fsx_client)
         self._assert_created(ref, validator, file_system_id, svm_id, svm_name)
-        self._assert_steady_state(ref, validator, svm_id)
+        updates_before = get_controller_api_call_count(
+            "UpdateStorageVirtualMachine"
+        )
         self._update_tags_and_assert(ref, validator, svm_id)
+        self._assert_steady_state(ref, validator, svm_id, updates_before)
         self._delete_and_assert(ref, validator, svm_id)
 
     def _assert_created(self, ref, validator, file_system_id, svm_id, svm_name):
@@ -236,11 +237,28 @@ class TestStorageVirtualMachine:
             key_member_name="key", value_member_name="value",
         )
 
-    def _assert_steady_state(self, ref, validator, svm_id):
-        """A non-AD SVM must not keep producing a delta: no Terminal (e.g. from
-        the AD-removal check) and no failed Update after further reconciles.
+    def _assert_steady_state(self, ref, validator, svm_id, updates_before):
+        """A non-AD SVM must not keep producing a delta.
+
+        The preceding tag patch bumps generation and so forces a reconcile
+        (an annotation change would not, without the IgnoreFieldDrift gate).
+        A tags-only delta must skip UpdateStorageVirtualMachine, so an
+        unchanged UpdateStorageVirtualMachine counter proves Describe's view
+        (RootVolumeSecurityStyle, the absent AD block) converges with no
+        lasting delta. No Terminal (e.g. from the AD-removal check) either.
         """
-        time.sleep(STEADY_STATE_SECONDS)
+        updates_after = get_controller_api_call_count(
+            "UpdateStorageVirtualMachine"
+        )
+        assert updates_after == updates_before, (
+            f"UpdateStorageVirtualMachine count went from {updates_before} to "
+            f"{updates_after}: "
+            + (
+                "the controller restarted mid-window (counter reset)"
+                if updates_after < updates_before
+                else "a non-Tags delta caused an UpdateStorageVirtualMachine call"
+            )
+        )
         cr = k8s.get_resource(ref)
         by_type = {c["type"]: c for c in cr["status"].get("conditions") or []}
         terminal = by_type.get(condition.CONDITION_TYPE_TERMINAL)

@@ -22,6 +22,38 @@ from acktest import tags as ack_tags
 from acktest.k8s import condition
 from acktest.k8s import resource as k8s
 from botocore.exceptions import ClientError
+from kubernetes import client
+
+
+# The controller's metrics Service (config/controller/service.yaml), which
+# test-infra applies alongside the controller deployment.
+METRICS_SERVICE = "ack-fsx-metrics-service:8080"
+METRICS_NAMESPACE = "ack-system"
+OUTBOUND_API_REQUESTS_METRIC = "ack_outbound_api_requests_total"
+
+
+def get_controller_api_call_count(op_id: str) -> int:
+    """Returns the controller's ack_outbound_api_requests_total for op_id.
+
+    Assumes a single controller replica behind the metrics Service and no
+    restart during the measured window: the counter is per-process, so a
+    restart resets it and another replica would report its own count.
+    """
+    metrics = client.CoreV1Api(
+        k8s._get_k8s_api_client()
+    ).connect_get_namespaced_service_proxy_with_path(
+        METRICS_SERVICE, METRICS_NAMESPACE, "metrics",
+    )
+    label = f'op_id="{op_id}"'
+    total = 0
+    for line in metrics.splitlines():
+        if not line.startswith(OUTBOUND_API_REQUESTS_METRIC + "{"):
+            continue
+        labels, _, value = line.rpartition("}")
+        if label not in labels:
+            continue
+        total += int(float(value.split()[0]))
+    return total
 
 
 # Not-found codes FSxValidator maps to None.
