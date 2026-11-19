@@ -292,10 +292,13 @@ class TestStorageVirtualMachine:
             wait_periods=SVM_MODIFY_WAIT_PERIODS,
             period_length=SVM_MODIFY_PERIOD_LENGTH,
         )
-        assert k8s.wait_on_condition(
-            ref, condition.CONDITION_TYPE_RESOURCE_SYNCED, "True",
-            wait_periods=SVM_MODIFY_WAIT_PERIODS,
-            period_length=SVM_MODIFY_PERIOD_LENGTH,
+        # Synced may still be True from the pre-patch generation, and syncTags
+        # runs before any UpdateStorageVirtualMachine in the same reconcile.
+        # Wait for Synced at the patched generation so the steady-state counter
+        # is read only after that reconcile has finished.
+        wait_for_synced_or_terminal(
+            ref, SVM_MODIFY_WAIT_PERIODS, SVM_MODIFY_PERIOD_LENGTH,
+            current_generation=True,
         )
 
         aws_tags = validator.get_tags(svm_id)

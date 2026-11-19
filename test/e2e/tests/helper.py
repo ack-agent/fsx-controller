@@ -64,12 +64,17 @@ NOT_FOUND_ERROR_CODES = frozenset(
 
 def wait_for_synced_or_terminal(
     ref, wait_periods: int, period_length: int,
+    *, current_generation: bool = False,
 ) -> None:
     """Waits for ACK.ResourceSynced=True, failing fast on ACK.Terminal.
 
     acktest's wait_on_condition polls the full timeout regardless, so a
     terminal create error costs the whole wait and surfaces as a bare
     `assert False` with the reason only in the controller logs.
+
+    With current_generation=True it also waits until the Synced condition
+    was set for the CR's current metadata.generation, so a Synced=True left
+    over from an earlier generation doesn't count.
     """
     for _ in range(wait_periods):
         cr = k8s.get_resource(ref)
@@ -85,18 +90,26 @@ def wait_for_synced_or_terminal(
 
         synced = by_type.get(condition.CONDITION_TYPE_RESOURCE_SYNCED)
         if synced is not None and synced.get("status") == "True":
-            return
+            if not current_generation:
+                return
+            generation = (cr or {}).get("metadata", {}).get("generation")
+            if synced.get("observedGeneration") == generation:
+                return
 
         time.sleep(period_length)
 
     # Report the last-known conditions so a real timeout is diagnosable.
     cr = k8s.get_resource(ref)
     conditions = (cr or {}).get("status", {}).get("conditions") or []
+    generation = (cr or {}).get("metadata", {}).get("generation")
     raise AssertionError(
         f"{ref.name} did not reach ACK.ResourceSynced=True within "
-        f"{wait_periods * period_length}s; conditions: "
+        f"{wait_periods * period_length}s; generation={generation}; "
+        "conditions: "
         + "; ".join(
-            f"{c.get('type')}={c.get('status')} ({c.get('message')})"
+            f"{c.get('type')}={c.get('status')} "
+            f"(observedGeneration={c.get('observedGeneration')}) "
+            f"({c.get('message')})"
             for c in conditions
         )
     )

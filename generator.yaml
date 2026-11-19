@@ -548,6 +548,10 @@ resources:
           in: [ "CREATED" ]
     # Skip a redundant DeleteStorageVirtualMachine while one is in flight.
     # Every other state is allowed so a requested delete is never blocked.
+    # This is an allow-list of every StorageVirtualMachineLifecycle value in
+    # the SDK model except DELETING; a lifecycle value FSx adds later would
+    # requeue the delete until the list is updated and the controller is
+    # regenerated.
     deletable:
       when:
         - path: Status.Lifecycle
@@ -569,10 +573,9 @@ resources:
       ResourceARN:
         is_arn: true
       # Absent from UpdateStorageVirtualMachineInput -- create-only.
-      # Known gap (community#3097, state not re-checked): the CEL rule is
-      # skipped when the old value is absent and cannot see FileSystemRef
-      # changes; Describe still reports the actual values, so the delta remains
-      # visible.
+      # Known gap (community#3097): the CEL rule is skipped when the old value
+      # is absent and cannot see FileSystemRef changes; Describe still reports
+      # the actual values, so the delta remains visible.
       FileSystemId:
         is_immutable: true
         references:
@@ -600,7 +603,7 @@ resources:
       # Write-only: never returned by Describe, so latest keeps desired's
       # reference and it never produces a delta. Changing the Secret does not
       # rotate the password; that awaits the runtime's general secret-change
-      # detection (runtime#253, state not re-checked).
+      # detection (runtime#253).
       SvmAdminPassword:
         is_secret: true
       # Keep the desired block (with its Password secret reference) after
@@ -618,6 +621,24 @@ resources:
       # must not be both mutable and compare-ignored (Pattern 2b).
       ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.Password:
         is_secret: true
+      # FSx fills these in when they are left out (the domain's "Domain Admins"
+      # group and the directory's default OU) and Describe reports them in
+      # SelfManagedActiveDirectoryAttributes. late_initialize copies the observed
+      # value into the Spec, so an omitted value does not leave a nil-vs-value
+      # delta that resends UpdateStorageVirtualMachine (with both passwords)
+      # every reconcile. These paths are per-CRD; FileSystem is unaffected.
+      # skip_incomplete_check: not yet confirmed against a live AD-joined SVM
+      # that Describe always reports them, so a missing value must not requeue
+      # forever.
+      # Known gap (not reproduced): if FSx changes the case of DomainName or
+      # NetBiosName, or reorders DNSIPs, the delta would still fire every
+      # reconcile. No compare option can absorb that without hiding real drift.
+      ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup:
+        late_initialize:
+          skip_incomplete_check: {}
+      ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName:
+        late_initialize:
+          skip_incomplete_check: {}
       # Lives on the typedef shared with FileSystem, so FileSystem gains the
       # same reference (also configured on the FileSystem path).
       ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret:

@@ -50,7 +50,7 @@ var (
 // +kubebuilder:rbac:groups=fsx.services.k8s.aws,resources=storagevirtualmachines,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=fsx.services.k8s.aws,resources=storagevirtualmachines/status,verbs=get;update;patch
 
-var lateInitializeFieldNames = []string{"RootVolumeSecurityStyle"}
+var lateInitializeFieldNames = []string{"FileSystemAdministratorsGroup", "OrganizationalUnitDistinguishedName", "RootVolumeSecurityStyle"}
 
 // resourceManager is responsible for providing a consistent way to perform
 // CRUD operations in a backend AWS service API for Book custom resources.
@@ -262,6 +262,20 @@ func (rm *resourceManager) lateInitializeFromReadOneOutput(
 ) acktypes.AWSResource {
 	observedKo := rm.concreteResource(observed).ko.DeepCopy()
 	latestKo := rm.concreteResource(latest).ko.DeepCopy()
+	if observedKo.Spec.ActiveDirectoryConfiguration != nil && latestKo.Spec.ActiveDirectoryConfiguration != nil {
+		if observedKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration != nil && latestKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration != nil {
+			if observedKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup != nil && latestKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup == nil {
+				latestKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup = observedKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup
+			}
+		}
+	}
+	if observedKo.Spec.ActiveDirectoryConfiguration != nil && latestKo.Spec.ActiveDirectoryConfiguration != nil {
+		if observedKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration != nil && latestKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration != nil {
+			if observedKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName != nil && latestKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName == nil {
+				latestKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName = observedKo.Spec.ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName
+			}
+		}
+	}
 	if observedKo.Spec.RootVolumeSecurityStyle != nil && latestKo.Spec.RootVolumeSecurityStyle == nil {
 		latestKo.Spec.RootVolumeSecurityStyle = observedKo.Spec.RootVolumeSecurityStyle
 	}

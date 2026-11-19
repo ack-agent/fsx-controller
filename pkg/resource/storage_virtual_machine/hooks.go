@@ -176,8 +176,9 @@ func restoreRootVolumeSecurityStyle(
 //
 // The check keys on SelfManagedActiveDirectoryConfiguration being reported,
 // not just the outer struct, so a partial block FSx might report for an SVM
-// that never joined AD is not rejected. Known gap: what Describe returns for
-// an SVM without AD has not been verified against a live resource.
+// that never joined AD is not rejected. The no-AD case is covered by e2e:
+// test_storage_virtual_machine.py asserts Describe reports no
+// SelfManagedActiveDirectoryConfiguration for an SVM created without AD.
 func rejectUnexpressibleADChanges(
 	desired *resource,
 	latest *resource,
