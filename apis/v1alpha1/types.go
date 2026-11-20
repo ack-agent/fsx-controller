@@ -555,6 +555,7 @@ type CreateSnaplockConfiguration struct {
 // machine (SVM) to your self-managed (including on-premises) Microsoft Active
 // Directory directory.
 type CreateSvmActiveDirectoryConfiguration struct {
+	NetBiosName *string `json:"netBiosName,omitempty"`
 	// The configuration that Amazon FSx uses to join a FSx for Windows File Server
 	// file system or an FSx for ONTAP storage virtual machine (SVM) to a self-managed
 	// (including on-premises) Microsoft Active Directory (AD) directory. For more
@@ -1423,13 +1424,15 @@ type SelfManagedActiveDirectoryAttributes struct {
 // Active Directory (https://docs.aws.amazon.com/fsx/latest/WindowsGuide/self-managed-AD.html)
 // or Managing FSx for ONTAP SVMs (https://docs.aws.amazon.com/fsx/latest/ONTAPGuide/managing-svms.html).
 type SelfManagedActiveDirectoryConfiguration struct {
-	DNSIPs                              []*string                       `json:"dnsIPs,omitempty"`
-	DomainJoinServiceAccountSecret      *string                         `json:"domainJoinServiceAccountSecret,omitempty"`
-	DomainName                          *string                         `json:"domainName,omitempty"`
-	FileSystemAdministratorsGroup       *string                         `json:"administratorsGroup,omitempty"`
-	OrganizationalUnitDistinguishedName *string                         `json:"organizationalUnitDistinguishedName,omitempty"`
-	Password                            *ackv1alpha1.SecretKeyReference `json:"password,omitempty"`
-	UserName                            *string                         `json:"userName,omitempty"`
+	DNSIPs                         []*string `json:"dnsIPs,omitempty"`
+	DomainJoinServiceAccountSecret *string   `json:"domainJoinServiceAccountSecret,omitempty"`
+	// Reference field for DomainJoinServiceAccountSecret
+	DomainJoinServiceAccountSecretRef   *ackv1alpha1.AWSResourceReferenceWrapper `json:"domainJoinServiceAccountSecretRef,omitempty"`
+	DomainName                          *string                                  `json:"domainName,omitempty"`
+	FileSystemAdministratorsGroup       *string                                  `json:"administratorsGroup,omitempty"`
+	OrganizationalUnitDistinguishedName *string                                  `json:"organizationalUnitDistinguishedName,omitempty"`
+	Password                            *ackv1alpha1.SecretKeyReference          `json:"password,omitempty"`
+	UserName                            *string                                  `json:"userName,omitempty"`
 }
 
 // Specifies changes you are making to the self-managed Microsoft Active Directory
@@ -1506,22 +1509,42 @@ type Snapshot struct {
 	VolumeID *string `json:"volumeID,omitempty"`
 }
 
+// A filter used to restrict the results of describe calls for Amazon FSx for
+// NetApp ONTAP storage virtual machines (SVMs). You can use multiple filters
+// to return results that meet all applied filter requirements.
+type StorageVirtualMachineFilter struct {
+	Name   *string   `json:"name,omitempty"`
+	Values []*string `json:"values,omitempty"`
+}
+
 // Describes the Amazon FSx for NetApp ONTAP storage virtual machine (SVM) configuration.
-type StorageVirtualMachine struct {
+type StorageVirtualMachine_SDK struct {
+	// Describes the Microsoft Active Directory (AD) directory configuration to
+	// which the FSx for ONTAP storage virtual machine (SVM) is joined. Note that
+	// account credentials are not returned in the response payload.
+	ActiveDirectoryConfiguration *SvmActiveDirectoryConfiguration `json:"activeDirectoryConfiguration,omitempty"`
 	// The time that the resource was created, in seconds (since 1970-01-01T00:00:00Z),
 	// also known as Unix time.
 	CreationTime *metav1.Time `json:"creationTime,omitempty"`
+	// An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has the following
+	// endpoints that are used to access data or to manage the SVM using the NetApp
+	// ONTAP CLI, REST API, or NetApp CloudManager.
+	Endpoints *SvmEndpoints `json:"endpoints,omitempty"`
 	// The globally unique ID of the file system, assigned by Amazon FSx.
 	FileSystemID *string `json:"fileSystemID,omitempty"`
+	Lifecycle    *string `json:"lifecycle,omitempty"`
 	// Describes why a resource lifecycle state changed.
 	LifecycleTransitionReason *LifecycleTransitionReason `json:"lifecycleTransitionReason,omitempty"`
+	Name                      *string                    `json:"name,omitempty"`
 	// The Amazon Resource Name (ARN) for a given resource. ARNs uniquely identify
 	// Amazon Web Services resources. We require an ARN when you need to specify
 	// a resource unambiguously across all of Amazon Web Services. For more information,
 	// see Amazon Resource Names (ARNs) (https://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html)
 	// in the Amazon Web Services General Reference.
 	ResourceARN             *string `json:"resourceARN,omitempty"`
+	RootVolumeSecurityStyle *string `json:"rootVolumeSecurityStyle,omitempty"`
 	StorageVirtualMachineID *string `json:"storageVirtualMachineID,omitempty"`
+	Subtype                 *string `json:"subtype,omitempty"`
 	// A list of Tag values, with a maximum of 50 elements.
 	Tags []*Tag  `json:"tags,omitempty"`
 	UUID *string `json:"uuid,omitempty"`
@@ -1531,6 +1554,7 @@ type StorageVirtualMachine struct {
 // which the FSx for ONTAP storage virtual machine (SVM) is joined. Note that
 // account credentials are not returned in the response payload.
 type SvmActiveDirectoryConfiguration struct {
+	NetBiosName *string `json:"netBiosName,omitempty"`
 	// The configuration of the self-managed Microsoft Active Directory (AD) directory
 	// to which the Windows File Server or ONTAP storage virtual machine (SVM) instance
 	// is joined.
@@ -1547,6 +1571,32 @@ type SvmEndpoint struct {
 	DNSName       *string   `json:"dnsName,omitempty"`
 	IPAddresses   []*string `json:"ipAddresses,omitempty"`
 	IPv6Addresses []*string `json:"ipv6Addresses,omitempty"`
+}
+
+// An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has the following
+// endpoints that are used to access data or to manage the SVM using the NetApp
+// ONTAP CLI, REST API, or NetApp CloudManager.
+type SvmEndpoints struct {
+	// An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+	// that are used to access data or to manage the SVM using the NetApp ONTAP
+	// CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+	// and Smb endpoints.
+	Iscsi *SvmEndpoint `json:"iscsi,omitempty"`
+	// An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+	// that are used to access data or to manage the SVM using the NetApp ONTAP
+	// CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+	// and Smb endpoints.
+	Management *SvmEndpoint `json:"management,omitempty"`
+	// An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+	// that are used to access data or to manage the SVM using the NetApp ONTAP
+	// CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+	// and Smb endpoints.
+	Nfs *SvmEndpoint `json:"nfs,omitempty"`
+	// An Amazon FSx for NetApp ONTAP storage virtual machine (SVM) has four endpoints
+	// that are used to access data or to manage the SVM using the NetApp ONTAP
+	// CLI, REST API, or NetApp CloudManager. They are the Iscsi, Management, Nfs,
+	// and Smb endpoints.
+	Smb *SvmEndpoint `json:"smb,omitempty"`
 }
 
 // Specifies a key-value pair for a resource tag.
@@ -1827,6 +1877,7 @@ type UpdateSnaplockConfiguration struct {
 // Active Directory (AD) configuration. Note that account credentials are not
 // returned in the response payload.
 type UpdateSvmActiveDirectoryConfiguration struct {
+	NetBiosName *string `json:"netBiosName,omitempty"`
 	// Specifies changes you are making to the self-managed Microsoft Active Directory
 	// configuration to which an FSx for Windows File Server file system or an FSx
 	// for ONTAP SVM is joined.

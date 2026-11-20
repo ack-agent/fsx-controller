@@ -5,3 +5,4 @@ resources:
   - bases/fsx.services.k8s.aws_backups.yaml
   - bases/fsx.services.k8s.aws_datarepositoryassociations.yaml
   - bases/fsx.services.k8s.aws_filesystems.yaml
+  - bases/fsx.services.k8s.aws_storagevirtualmachines.yaml

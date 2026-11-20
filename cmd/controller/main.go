@@ -29,6 +29,7 @@ import (
 	acktypes "github.com/aws-controllers-k8s/runtime/pkg/types"
 	ackrtutil "github.com/aws-controllers-k8s/runtime/pkg/util"
 	ackrtwebhook "github.com/aws-controllers-k8s/runtime/pkg/webhook"
+	secretsmanagerapitypes "github.com/aws-controllers-k8s/secretsmanager-controller/apis/v1alpha1"
 	flag "github.com/spf13/pflag"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -46,6 +47,7 @@ import (
 	_ "github.com/aws-controllers-k8s/fsx-controller/pkg/resource/backup"
 	_ "github.com/aws-controllers-k8s/fsx-controller/pkg/resource/data_repository_association"
 	_ "github.com/aws-controllers-k8s/fsx-controller/pkg/resource/file_system"
+	_ "github.com/aws-controllers-k8s/fsx-controller/pkg/resource/storage_virtual_machine"
 
 	"github.com/aws-controllers-k8s/fsx-controller/pkg/version"
 )
@@ -79,6 +81,7 @@ func init() {
 	_ = ackv1alpha1.AddToScheme(scheme)
 	_ = ec2apitypes.AddToScheme(scheme)
 	_ = kmsapitypes.AddToScheme(scheme)
+	_ = secretsmanagerapitypes.AddToScheme(scheme)
 }
 
 func main() {

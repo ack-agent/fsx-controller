@@ -12,6 +12,7 @@ rules:
   - backups
   - datarepositoryassociations
   - filesystems
+  - storagevirtualmachines
   verbs:
   - get
   - list

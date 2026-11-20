@@ -5,7 +5,6 @@ ignore:
       - FileCache
       - FileSystemFromBackup
       - Snapshot
-      - StorageVirtualMachine
       - Volume
       - VolumeFromBackup
   field_paths:
@@ -426,6 +425,14 @@ resources:
         is_secret: true
         compare:
           is_ignored: true
+      # SelfManagedActiveDirectoryConfiguration is shared with
+      # StorageVirtualMachine, which references the Secret; configure it here
+      # too so the generated Ref is resolved on FileSystem as well.
+      WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret:
+        references:
+          resource: Secret
+          service_name: secretsmanager
+          path: Status.ACKResourceMetadata.ARN
       # The remaining entries here are fields Describe cannot name-match back
       # into the Spec. Each is either immutable (create-only in the FSx API, so
       # an edit must be rejected rather than silently dropped) or recovered from
@@ -486,6 +493,182 @@ resources:
           type: string
           index: 25
           priority: 1
+        - name: STATE
+          json_path: .status.lifecycle
+          type: string
+          index: 30
+  StorageVirtualMachine:
+    # ClientRequestToken is an SDK idempotency token the middleware auto-fills.
+    ignore_idempotency_token: true
+    # Drop the StorageVirtualMachine prefix that stutters on the kind.
+    # DescribeStorageVirtualMachines' StorageVirtualMachineIds input needs no
+    # rename when it matches the <Resource>Ids lookup (Backup precedent).
+    renames:
+      operations:
+        CreateStorageVirtualMachine:
+          output_fields:
+            StorageVirtualMachineId: ID
+        DescribeStorageVirtualMachines:
+          output_fields:
+            StorageVirtualMachineId: ID
+        UpdateStorageVirtualMachine:
+          input_fields:
+            StorageVirtualMachineId: ID
+          output_fields:
+            StorageVirtualMachineId: ID
+        DeleteStorageVirtualMachine:
+          input_fields:
+            StorageVirtualMachineId: ID
+    hooks:
+      # Syncs tags (UpdateStorageVirtualMachine has no Tags member), skips the
+      # update call on tags-only changes, and rejects removing the AD block,
+      # which UpdateSvmActiveDirectoryConfiguration cannot express.
+      sdk_update_pre_build_request:
+        template_path: hooks/storage_virtual_machine/sdk_update_pre_build_request.go.tpl
+      # Restores the write-only AD Password secret reference (Describe never
+      # returns it) and the create-only RootVolumeSecurityStyle when Describe
+      # omits it, reads tags via ListTagsForResource, and makes FAILED
+      # Terminal.
+      sdk_read_many_post_set_output:
+        template_path: hooks/storage_virtual_machine/sdk_read_many_post_set_output.go.tpl
+      # Delete is async: record DELETING and hold the finalizer until Describe
+      # reports StorageVirtualMachineNotFound.
+      sdk_delete_post_request:
+        template_path: hooks/storage_virtual_machine/sdk_delete_post_request.go.tpl
+    # DescribeStorageVirtualMachines does not report SVM tags (seen in e2e);
+    # the read hook fetches them with ListTagsForResource (rm.getTags).
+    tags:
+      ignore: false
+    # CREATING and PENDING requeue until CREATED. MISCONFIGURED is documented
+    # as recoverable and stays retryable; FAILED is made Terminal by the read
+    # hook.
+    synced:
+      when:
+        - path: Status.Lifecycle
+          in: [ "CREATED" ]
+    # Skip a redundant DeleteStorageVirtualMachine while one is in flight.
+    # Every other state is allowed so a requested delete is never blocked.
+    # This is an allow-list of every StorageVirtualMachineLifecycle value in
+    # the SDK model except DELETING; a lifecycle value FSx adds later would
+    # requeue the delete until the list is updated and the controller is
+    # regenerated.
+    deletable:
+      when:
+        - path: Status.Lifecycle
+          in: [ "CREATED", "CREATING", "PENDING", "FAILED", "MISCONFIGURED" ]
+    # No terminal_codes: BadRequest is the catch-all (it also covers deleting
+    # an SVM that still has non-root volumes); ActiveDirectoryError can come
+    # from AD/DNS/network state outside the Spec; UnsupportedOperation and
+    # FileSystemNotFound are fixed only through the immutable FileSystemId (and
+    # the latter is transient right after the parent is created);
+    # ServiceLimitExceeded is external; IncompatibleParameterError is an
+    # idempotency-token clash the SDK clears next reconcile.
+    exceptions:
+      errors:
+        404:
+          code: StorageVirtualMachineNotFound
+    fields:
+      # Only `ARN`/`StorageVirtualMachineARN` are auto-detected; syncTags reads
+      # the ARN from Status.ACKResourceMetadata.ARN.
+      ResourceARN:
+        is_arn: true
+      # Absent from UpdateStorageVirtualMachineInput -- create-only.
+      # Known gap (community#3097): the CEL rule is skipped when the old value
+      # is absent and cannot see FileSystemRef changes; Describe still reports
+      # the actual values, so the delta remains visible.
+      FileSystemId:
+        is_immutable: true
+        references:
+          resource: FileSystem
+          path: Status.ID
+      Name:
+        is_immutable: true
+      # Create-only (not in UpdateStorageVirtualMachineInput). When the Spec
+      # omits it and Describe reports one (the FSx default), late_initialize
+      # copies the observed value into the Spec so no delta (and no no-op
+      # UpdateStorageVirtualMachine) recurs. e2e showed Describe can omit it
+      # for an SVM created without one, so skip_incomplete_check keeps that
+      # case from requeueing forever. The Create/Update responses are ignored
+      # and the read hook restores the declared value when Describe leaves it
+      # empty (restoreRootVolumeSecurityStyle); an observed value is kept as-is.
+      RootVolumeSecurityStyle:
+        is_immutable: true
+        late_initialize:
+          skip_incomplete_check: {}
+        set:
+          - method: Create
+            ignore: true
+          - method: Update
+            ignore: true
+      # Write-only: never returned by Describe, so latest keeps desired's
+      # reference and it never produces a delta. Changing the Secret does not
+      # rotate the password; that awaits the runtime's general secret-change
+      # detection (runtime#253).
+      SvmAdminPassword:
+        is_secret: true
+      # Keep the desired block (with its Password secret reference) after
+      # Create and Update; the next Describe reports the observed values.
+      ActiveDirectoryConfiguration:
+        set:
+          - method: Create
+            ignore: true
+          - method: Update
+            ignore: true
+      # Required here as well as on the FileSystem path: is_secret is resolved
+      # per CRD path even though the typedef is shared. Deliberately NOT
+      # compare-ignored (unlike the FileSystem path): the read hook restores
+      # the reference from desired, so it never produces a delta, and a field
+      # must not be both mutable and compare-ignored (Pattern 2b).
+      ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.Password:
+        is_secret: true
+      # FSx fills these in when they are left out (the domain's "Domain Admins"
+      # group and the directory's default OU) and Describe reports them in
+      # SelfManagedActiveDirectoryAttributes. late_initialize copies the observed
+      # value into the Spec, so an omitted value does not leave a nil-vs-value
+      # delta that resends UpdateStorageVirtualMachine (with both passwords)
+      # every reconcile. These paths are per-CRD; FileSystem is unaffected.
+      # skip_incomplete_check: not yet confirmed against a live AD-joined SVM
+      # that Describe always reports them, so a missing value must not requeue
+      # forever.
+      # Known gap (not reproduced): if FSx changes the case of DomainName or
+      # NetBiosName, or reorders DNSIPs, the delta would still fire every
+      # reconcile. No compare option can absorb that without hiding real drift.
+      ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.FileSystemAdministratorsGroup:
+        late_initialize:
+          skip_incomplete_check: {}
+      ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.OrganizationalUnitDistinguishedName:
+        late_initialize:
+          skip_incomplete_check: {}
+      # Lives on the typedef shared with FileSystem, so FileSystem gains the
+      # same reference (also configured on the FileSystem path).
+      ActiveDirectoryConfiguration.SelfManagedActiveDirectoryConfiguration.DomainJoinServiceAccountSecret:
+        references:
+          resource: Secret
+          service_name: secretsmanager
+          path: Status.ACKResourceMetadata.ARN
+      # The Update response is not authoritative for tags (synced through
+      # TagResource/UntagResource); keep desired's.
+      Tags:
+        set:
+          - method: Update
+            ignore: true
+    print:
+      add_age_column: true
+      add_synced_column: true
+      order_by: index
+      additional_columns:
+        - name: ID
+          json_path: .status.id
+          type: string
+          index: 10
+        - name: FILESYSTEM
+          json_path: .spec.fileSystemID
+          type: string
+          index: 15
+        - name: NAME
+          json_path: .spec.name
+          type: string
+          index: 20
         - name: STATE
           json_path: .status.lifecycle
           type: string
