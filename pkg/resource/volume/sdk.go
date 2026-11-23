@@ -363,15 +363,17 @@ func (rm *resourceManager) sdkFind(
 	// Describe has no ConstituentsPerAggregate and reports a conditional
 	// CoolingPeriod default; keep what the user submitted.
 	restoreNonRoundTrippedSpecFields(r.ko, ko)
-	// DescribeVolumes does not report volume tags; read them from
-	// ListTagsForResource.
-	if err := rm.setTagsFromAWS(ctx, ko); err != nil {
-		return nil, err
-	}
 	// FAILED is final; surface it as Terminal with FSx's
-	// LifecycleTransitionReason rather than requeueing forever.
+	// LifecycleTransitionReason rather than requeueing forever. Checked
+	// before the tag read so a failing ListTagsForResource cannot hide it.
 	if err := terminalIfFailed(ko); err != nil {
+		keepDesiredTags(r.ko, ko)
 		return &resource{ko}, err
+	}
+	// DescribeVolumes does not report volume tags; read them from
+	// ListTagsForResource (skipped during deletion, keeping desired's).
+	if err := rm.setTagsFromAWS(ctx, r.ko, ko); err != nil {
+		return nil, err
 	}
 
 	return &resource{ko}, nil
@@ -996,20 +998,8 @@ func (rm *resourceManager) sdkUpdate(
 	defer func() {
 		exit(err)
 	}()
-	// UpdateVolume has no Tags member, so tags are synced with
-	// TagResource/UntagResource and, when they are the only change, the
-	// update call is skipped.
-	if delta.DifferentAt("Spec.Tags") {
-		if err = rm.syncTags(ctx, desired, latest); err != nil {
-			return nil, err
-		}
-	}
-	if !delta.DifferentExcept("Spec.Tags") {
-		return desired, nil
-	}
-
 	if latest.ko.Status.Lifecycle != nil {
-		if !ackutil.InStrings(*latest.ko.Status.Lifecycle, []string{"AVAILABLE", "CREATED", "PENDING", "FAILED", "MISCONFIGURED", "DELETING"}) {
+		if !ackutil.InStrings(*latest.ko.Status.Lifecycle, []string{"AVAILABLE", "CREATED", "PENDING", "FAILED", "MISCONFIGURED"}) {
 			return nil, ackrequeue.NeededAfter(
 				fmt.Errorf("resource is in %s state, cannot be updated",
 					*latest.ko.Status.Lifecycle),
@@ -1021,6 +1011,19 @@ func (rm *resourceManager) sdkUpdate(
 	input, err := rm.newUpdateRequestPayload(ctx, desired, delta)
 	if err != nil {
 		return nil, err
+	}
+	// UpdateVolume has no Tags member, so tags are synced with
+	// TagResource/UntagResource and, when they are the only change, the
+	// update call is skipped.
+	// Runs after the generated `updateable.when` guard, so tags are not synced
+	// while the volume is in a held state.
+	if delta.DifferentAt("Spec.Tags") {
+		if err = rm.syncTags(ctx, desired, latest); err != nil {
+			return nil, err
+		}
+	}
+	if !delta.DifferentExcept("Spec.Tags") {
+		return desired, nil
 	}
 
 	var resp *svcsdk.UpdateVolumeOutput

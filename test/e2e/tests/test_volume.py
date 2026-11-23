@@ -44,6 +44,7 @@ from acktest.resources import random_suffix_name
 from e2e import CRD_GROUP, CRD_VERSION, load_fsx_resource, service_marker
 from e2e.replacement_values import REPLACEMENT_VALUES
 from e2e.tests.helper import (
+    BackupValidator,
     FSxValidator,
     StorageVirtualMachineValidator,
     VolumeValidator,
@@ -54,6 +55,7 @@ from e2e.tests.helper import (
 FS_RESOURCE_PLURAL = "filesystems"
 SVM_RESOURCE_PLURAL = "storagevirtualmachines"
 VOLUME_RESOURCE_PLURAL = "volumes"
+BACKUP_RESOURCE_PLURAL = "backups"
 
 SKIP_FINAL_BACKUP_ANNOTATION = "fsx.services.k8s.aws/skip-final-backup"
 
@@ -100,6 +102,11 @@ VOLUME_DELETE_WAIT_PERIODS = 80
 VOLUME_DELETE_PERIOD_LENGTH = 15
 LATE_INIT_WAIT_PERIODS = 20
 LATE_INIT_PERIOD_LENGTH = 10
+# As in test_backup.py.
+BACKUP_CREATE_WAIT_PERIODS = 120
+BACKUP_CREATE_PERIOD_LENGTH = 15
+BACKUP_DELETE_WAIT_PERIODS = 20
+BACKUP_DELETE_PERIOD_LENGTH = 15
 
 
 def _delete_cr(ref, wait_periods, period_length):
@@ -283,6 +290,42 @@ def _adopt_and_assert(fsx_client, validator, volume_id, volume_type, volume_name
     assert validator.get(volume_id) is not None
 
 
+def _backup_by_volume_ref_and_assert(fsx_client, volume_ref, volume_id):
+    """Creates a Backup whose volume is resolved through volumeRef, checks
+    FSx backed up that volume, and deletes the Backup before returning."""
+    backup_name = random_suffix_name("ack-fsx-vol-backup", 32)
+    replacements = REPLACEMENT_VALUES.copy()
+    replacements.update({
+        "BACKUP_NAME": backup_name,
+        "VOLUME_CR_NAME": volume_ref.name,
+        "TAG_KEY": TAG_KEY,
+        "TAG_VALUE": INITIAL_TAG_VALUE,
+    })
+    resource_data = load_fsx_resource("backup_volume", additional_replacements=replacements)
+    backup_ref = _ref(BACKUP_RESOURCE_PLURAL, backup_name)
+    k8s.create_custom_resource(backup_ref, resource_data)
+    backup_id = None
+    try:
+        assert k8s.wait_resource_consumed_by_controller(backup_ref) is not None
+        wait_for_synced_or_terminal(
+            backup_ref, BACKUP_CREATE_WAIT_PERIODS, BACKUP_CREATE_PERIOD_LENGTH,
+        )
+        condition.assert_synced(backup_ref)
+        cr = k8s.get_resource(backup_ref)
+        backup_id = cr["status"]["id"]
+        assert cr["spec"]["volumeRef"]["from"]["name"] == volume_ref.name
+        backup = BackupValidator(fsx_client).get(backup_id)
+        assert backup is not None
+        assert backup["Volume"]["VolumeId"] == volume_id
+        assert backup["Lifecycle"] == "AVAILABLE"
+    finally:
+        if backup_id is None and k8s.get_resource_exists(backup_ref):
+            backup_id = (k8s.get_resource(backup_ref) or {}).get("status", {}).get("id")
+        _delete_cr(backup_ref, BACKUP_DELETE_WAIT_PERIODS, BACKUP_DELETE_PERIOD_LENGTH)
+        if backup_id is not None:
+            assert BackupValidator(fsx_client).wait_until_gone(backup_id)
+
+
 # ---------------------------------------------------------------- ONTAP
 
 
@@ -348,9 +391,11 @@ def ontap_volume(fsx_client, ontap_svm):
         ref, volume_id = _create_volume(fsx_client, "volume_ontap", replacements)
         yield (ref, file_system_id, svm_id, volume_id, volume_name)
     finally:
-        _cleanup_volume(fsx_client, ref)
-        # The test deletes without skip-final-backup; remove that backup.
-        _delete_final_backups(fsx_client, volume_name)
+        try:
+            _cleanup_volume(fsx_client, ref)
+        finally:
+            # The test deletes without skip-final-backup; remove that backup.
+            _delete_final_backups(fsx_client, volume_name)
 
 
 def _delete_final_backups(fsx_client, volume_name):
@@ -423,6 +468,8 @@ class TestOntapVolume:
         _assert_no_idle_update(ref, validator, volume_id, UPDATED_TAGS)
         self._update_and_assert(ref, validator, volume_id)
         _assert_no_idle_update(ref, validator, volume_id, INITIAL_TAGS)
+        # Backup.volumeRef resolves to this volume; gone before the volume is.
+        _backup_by_volume_ref_and_assert(fsx_client, ref, volume_id)
 
         def check(cr):
             cfg = cr["spec"]["ontapConfiguration"]

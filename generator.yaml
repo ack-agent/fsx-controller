@@ -693,6 +693,11 @@ resources:
     # unchanged on every ONTAP update would risk an unrelated rejection. Only
     # top-level members are omitted: a changed OntapConfiguration still
     # carries all of its members.
+    # Spec.Name stays mutable for both types. Renaming an ONTAP volume still
+    # sends Name. That case has not been verified against a live volume. If
+    # FSx rejects it, the BadRequest surfaces as a retryable condition (the
+    # controller does not pre-validate). If FSx were found to ignore it
+    # silently, a convergence check rejecting the delta would be the fix.
     update_operation:
       omit_unchanged_fields: true
     # Drop the Volume prefix that stutters on a Volume kind. DescribeVolumes'
@@ -721,9 +726,10 @@ resources:
             VolumeId: ID
     hooks:
       # Syncs tags (UpdateVolume has no Tags member) and skips the update call
-      # on tags-only changes.
-      sdk_update_pre_build_request:
-        template_path: hooks/volume/sdk_update_pre_build_request.go.tpl
+      # on tags-only changes. Placed after the generated updateable guard so
+      # tag edits are held with everything else.
+      sdk_update_post_build_request:
+        template_path: hooks/volume/sdk_update_post_build_request.go.tpl
       # The generated setters replace Spec.OntapConfiguration wholesale from
       # the output shape, which has no ConstituentsPerAggregate; keep the
       # declared value. Also keeps CoolingPeriod unset when the user left it
@@ -734,8 +740,9 @@ resources:
       # always reports the root (Id 0, quota 0) quotas; treat those as equal.
       delta_pre_compare:
         template_path: hooks/volume/delta_pre_compare.go.tpl
-      # Same restore after Describe, reads tags via ListTagsForResource, and
-      # makes FAILED Terminal.
+      # Same restore after Describe; makes FAILED Terminal before reading tags
+      # via ListTagsForResource, and skips that read during deletion (keeping
+      # the desired tags).
       sdk_read_many_post_set_output:
         template_path: hooks/volume/sdk_read_many_post_set_output.go.tpl
       # Delete-time options come from annotations (skip-final-backup,
@@ -765,7 +772,8 @@ resources:
     # is allowed so a requested delete is never blocked. This is an allow-list
     # of every VolumeLifecycle value in the SDK model except DELETING; a
     # lifecycle value FSx adds later would requeue the delete until the list
-    # is updated and the controller is regenerated.
+    # is updated and the controller is regenerated (no `not_in` option; see
+    # updateable).
     deletable:
       when:
         - path: Status.Lifecycle
@@ -773,13 +781,17 @@ resources:
     # UpdateVolume is rejected while the volume is CREATING (e2e: "BadRequest:
     # Volume ... cannot be updated because it is being created", retried
     # 250+ times in a tight backoff right after create, when Describe does
-    # not yet report UserAndGroupQuotas). Only CREATING is held back, the one
-    # state with evidence; like `deletable`, this lists every other
-    # VolumeLifecycle value in the SDK model.
+    # not yet report UserAndGroupQuotas). DELETING is held because the volume
+    # is going away; FSx is expected to reject UpdateVolume there (not
+    # verified against a live volume), and a held requeue is quieter than a
+    # BadRequest backoff. Like `deletable`, this is an allow-list of the
+    # remaining VolumeLifecycle values in the SDK model, so a value FSx adds
+    # later is held until the list is updated; code-generator has no `not_in`
+    # option for `when` (suggested upstream issue).
     updateable:
       when:
         - path: Status.Lifecycle
-          in: [ "AVAILABLE", "CREATED", "PENDING", "FAILED", "MISCONFIGURED", "DELETING" ]
+          in: [ "AVAILABLE", "CREATED", "PENDING", "FAILED", "MISCONFIGURED" ]
     # Only codes fixable by editing this Spec belong here. MissingVolumeConfiguration
     # is cleared by adding the ontapConfiguration/openZFSConfiguration block
     # that matches spec.type. Deliberately excluded: BadRequest (the

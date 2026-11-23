@@ -18,6 +18,7 @@ import (
 	"errors"
 	"testing"
 
+	ackv1alpha1 "github.com/aws-controllers-k8s/runtime/apis/core/v1alpha1"
 	ackerr "github.com/aws-controllers-k8s/runtime/pkg/errors"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	svcsdk "github.com/aws/aws-sdk-go-v2/service/fsx"
@@ -205,8 +206,8 @@ func TestSetDeleteVolumeConfiguration(t *testing.T) {
 	t.Run("ONTAP skip-final-backup and bypass", func(t *testing.T) {
 		input := &svcsdk.DeleteVolumeInput{}
 		r := volumeWithAnnotations("ONTAP", map[string]string{
-			svcapitypes.SkipFinalBackupAnnotation:       "true",
-			BypassSnaplockEnterpriseRetentionAnnotation: "false",
+			svcapitypes.SkipFinalBackupAnnotation:                   "true",
+			svcapitypes.BypassSnaplockEnterpriseRetentionAnnotation: "false",
 		})
 		if err := setDeleteVolumeConfiguration(r, input); err != nil {
 			t.Fatal(err)
@@ -250,19 +251,39 @@ func TestSetDeleteVolumeConfiguration(t *testing.T) {
 		}
 	})
 	t.Run("malformed values are retryable errors", func(t *testing.T) {
-		for _, ann := range []map[string]string{
-			{svcapitypes.SkipFinalBackupAnnotation: "yes please"},
-			{BypassSnaplockEnterpriseRetentionAnnotation: "maybe"},
+		for _, tc := range []struct {
+			typ string
+			ann map[string]string
+		}{
+			{"ONTAP", map[string]string{svcapitypes.SkipFinalBackupAnnotation: "yes please"}},
+			{"ONTAP", map[string]string{svcapitypes.BypassSnaplockEnterpriseRetentionAnnotation: "maybe"}},
 			// A FileSystem-only option must not be accepted for a Volume.
-			{svcapitypes.OpenZFSDeleteOptionsAnnotation: "DELETE_CHILD_VOLUMES_AND_SNAPSHOTS,BOGUS"},
+			{"OPENZFS", map[string]string{svcapitypes.OpenZFSDeleteOptionsAnnotation: "DELETE_CHILD_VOLUMES_AND_SNAPSHOTS,BOGUS"}},
 		} {
-			err := setDeleteVolumeConfiguration(volumeWithAnnotations("ONTAP", ann), &svcsdk.DeleteVolumeInput{})
+			err := setDeleteVolumeConfiguration(volumeWithAnnotations(tc.typ, tc.ann), &svcsdk.DeleteVolumeInput{})
 			if err == nil {
-				t.Fatalf("%v: got nil error", ann)
+				t.Fatalf("%s %v: got nil error", tc.typ, tc.ann)
 			}
 			var term *ackerr.TerminalError
 			if errors.As(err, &term) {
-				t.Fatalf("%v: got terminal %v, want retryable", ann, err)
+				t.Fatalf("%s %v: got terminal %v, want retryable", tc.typ, tc.ann, err)
+			}
+		}
+	})
+	t.Run("malformed annotation for the other type is ignored", func(t *testing.T) {
+		for _, tc := range []struct {
+			typ string
+			ann map[string]string
+		}{
+			{"ONTAP", map[string]string{svcapitypes.OpenZFSDeleteOptionsAnnotation: "BOGUS"}},
+			{"OPENZFS", map[string]string{svcapitypes.SkipFinalBackupAnnotation: "yes"}},
+		} {
+			input := &svcsdk.DeleteVolumeInput{}
+			if err := setDeleteVolumeConfiguration(volumeWithAnnotations(tc.typ, tc.ann), input); err != nil {
+				t.Fatalf("%s %v: got %v, want nil", tc.typ, tc.ann, err)
+			}
+			if input.OntapConfiguration != nil || input.OpenZFSConfiguration != nil {
+				t.Fatalf("%s %v: got %+v, want no configuration", tc.typ, tc.ann, input)
 			}
 		}
 	})
@@ -280,30 +301,92 @@ func TestSetDeleteVolumeConfiguration(t *testing.T) {
 }
 
 func TestBypassSnaplockAnnotationName(t *testing.T) {
-	if BypassSnaplockEnterpriseRetentionAnnotation != "fsx.services.k8s.aws/bypass-snaplock-enterprise-retention" {
-		t.Fatalf("annotation = %s", BypassSnaplockEnterpriseRetentionAnnotation)
+	if svcapitypes.BypassSnaplockEnterpriseRetentionAnnotation != "fsx.services.k8s.aws/bypass-snaplock-enterprise-retention" {
+		t.Fatalf("annotation = %s", svcapitypes.BypassSnaplockEnterpriseRetentionAnnotation)
 	}
 }
 
 func TestSetTagsFromAWSSkips(t *testing.T) {
-	// Neither case may call ListTagsForResource (rm has no client).
+	// No case may call ListTagsForResource (rm has no client).
 	rm := &resourceManager{}
+	key, value := "k", "v"
+	desired := &svcapitypes.Volume{Spec: svcapitypes.VolumeSpec{
+		Tags: []*svcapitypes.Tag{{Key: &key, Value: &value}},
+	}}
+	arn := ackv1alpha1.AWSResourceName("arn:aws:fsx:us-west-2:111122223333:volume/fs-1/fsvol-1")
+	withARN := func(ko *svcapitypes.Volume) *svcapitypes.Volume {
+		ko.Status.ACKResourceMetadata = &ackv1alpha1.ResourceMetadata{ARN: &arn}
+		return ko
+	}
 	deleting := "DELETING"
+
+	// Being deleted, or DELETING: Describe's nil tags are replaced with a
+	// copy of desired's.
 	for name, ko := range map[string]*svcapitypes.Volume{
-		"deleting": {Status: svcapitypes.VolumeStatus{
+		"being deleted": withARN(&svcapitypes.Volume{
+			ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{}},
+		}),
+		"DELETING": withARN(&svcapitypes.Volume{Status: svcapitypes.VolumeStatus{
 			Lifecycle: &deleting,
-		}},
-		"no ARN": {},
+		}}),
 	} {
-		key := "k"
-		ko.Spec.Tags = []*svcapitypes.Tag{{Key: &key}}
-		if err := rm.setTagsFromAWS(context.Background(), ko); err != nil {
+		if err := rm.setTagsFromAWS(context.Background(), desired, ko); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if len(ko.Spec.Tags) != 1 {
-			t.Fatalf("%s: tags changed to %v", name, ko.Spec.Tags)
+		if len(ko.Spec.Tags) != 1 || *ko.Spec.Tags[0].Key != key || *ko.Spec.Tags[0].Value != value {
+			t.Fatalf("%s: tags = %v, want desired's", name, ko.Spec.Tags)
+		}
+		if &ko.Spec.Tags[0] == &desired.Spec.Tags[0] || ko.Spec.Tags[0] == desired.Spec.Tags[0] {
+			t.Fatalf("%s: tags alias desired's", name)
 		}
 	}
+
+	// No ARN yet: tags are left as they are.
+	ko := &svcapitypes.Volume{}
+	other := "other"
+	ko.Spec.Tags = []*svcapitypes.Tag{{Key: &other}}
+	if err := rm.setTagsFromAWS(context.Background(), desired, ko); err != nil {
+		t.Fatalf("no ARN: %v", err)
+	}
+	if len(ko.Spec.Tags) != 1 || *ko.Spec.Tags[0].Key != other {
+		t.Fatalf("no ARN: tags changed to %v", ko.Spec.Tags)
+	}
+}
+
+func TestKeepDesiredTags(t *testing.T) {
+	t.Run("nil desired tags", func(t *testing.T) {
+		k := "k"
+		ko := &svcapitypes.Volume{Spec: svcapitypes.VolumeSpec{
+			Tags: []*svcapitypes.Tag{{Key: &k}},
+		}}
+		keepDesiredTags(&svcapitypes.Volume{}, ko)
+		if ko.Spec.Tags != nil {
+			t.Fatalf("tags = %v, want nil", ko.Spec.Tags)
+		}
+	})
+	t.Run("copies without aliasing", func(t *testing.T) {
+		k, v := "k", "v"
+		desired := &svcapitypes.Volume{Spec: svcapitypes.VolumeSpec{
+			Tags: []*svcapitypes.Tag{{Key: &k, Value: &v}},
+		}}
+		ko := &svcapitypes.Volume{}
+		keepDesiredTags(desired, ko)
+		if len(ko.Spec.Tags) != 1 || *ko.Spec.Tags[0].Key != k || *ko.Spec.Tags[0].Value != v {
+			t.Fatalf("tags = %v, want desired's", ko.Spec.Tags)
+		}
+		*ko.Spec.Tags[0].Value = "changed"
+		if *desired.Spec.Tags[0].Value != "v" {
+			t.Fatalf("writing the copy changed desired")
+		}
+		ko.Spec.Tags[0] = nil
+		if desired.Spec.Tags[0] == nil {
+			t.Fatalf("copy shares desired's slice")
+		}
+	})
+	t.Run("nil inputs", func(t *testing.T) {
+		keepDesiredTags(nil, nil)
+		keepDesiredTags(nil, &svcapitypes.Volume{})
+	})
 }
 
 func ozfsResource(cfg *svcapitypes.CreateOpenZFSVolumeConfiguration) *resource {

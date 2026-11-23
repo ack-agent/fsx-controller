@@ -16,12 +16,18 @@ package v1alpha1
 import "fmt"
 
 var (
-	// SkipFinalBackupAnnotation sets SkipFinalBackup ("true" or "false") when a
-	// FileSystem is deleted. Absent leaves FSx's per-type default in effect:
-	// Lustre skips the backup, Windows and OpenZFS take one. A final backup
-	// outlives the file system as an FSx Backup this controller does not manage.
+	// SkipFinalBackupAnnotation sets SkipFinalBackup ("true" or "false") on
+	// delete.
 	//
-	// No effect on ONTAP, which has no delete configuration shape.
+	// FileSystem: absent leaves FSx's per-type default in effect: Lustre skips
+	// the backup, Windows and OpenZFS take one. ONTAP file systems have no
+	// delete configuration shape, so it has no effect there.
+	//
+	// Volume: sets DeleteVolumeOntapConfiguration.SkipFinalBackup (ONTAP
+	// volumes only). Absent sends nothing, so FSx takes a final backup.
+	//
+	// A final backup outlives the deleted resource as an FSx Backup this
+	// controller does not manage.
 	SkipFinalBackupAnnotation = fmt.Sprintf("%s/skip-final-backup", GroupVersion.Group)
 
 	// OpenZFSDeleteOptionsAnnotation sets DeleteFileSystemOpenZFSConfiguration
@@ -31,6 +37,18 @@ var (
 	// refusal surfaces as a condition: those children may be managed outside
 	// this controller.
 	//
-	// No effect on other file system types.
+	// For a Volume it sets DeleteVolumeOpenZFSConfiguration.Options, validated
+	// against the DeleteOpenZFSVolumeOption enum. Absent sends nothing, so FSx
+	// refuses to delete a volume that has child volumes or snapshots.
+	//
+	// No effect on other file system or volume types.
 	OpenZFSDeleteOptionsAnnotation = fmt.Sprintf("%s/openzfs-delete-options", GroupVersion.Group)
+
+	// BypassSnaplockEnterpriseRetentionAnnotation sets
+	// DeleteVolumeOntapConfiguration.BypassSnaplockEnterpriseRetention ("true"
+	// or "false") when an ONTAP Volume is deleted (ONTAP Volume only). Absent
+	// sends nothing, so FSx's default (false: retained WORM files block the
+	// delete) applies. Setting it to "true" deletes a SnapLock Enterprise
+	// volume that still holds retained files; it is never defaulted on.
+	BypassSnaplockEnterpriseRetentionAnnotation = fmt.Sprintf("%s/bypass-snaplock-enterprise-retention", GroupVersion.Group)
 )

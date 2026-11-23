@@ -16,6 +16,7 @@ package volume
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,26 +30,6 @@ import (
 
 	svcapitypes "github.com/aws-controllers-k8s/fsx-controller/apis/v1alpha1"
 	"github.com/aws-controllers-k8s/fsx-controller/pkg/util"
-)
-
-// BypassSnaplockEnterpriseRetentionAnnotation sets
-// DeleteVolumeOntapConfiguration.BypassSnaplockEnterpriseRetention ("true" or
-// "false") when an ONTAP Volume is deleted. Absent sends nothing, so FSx's
-// default (false: retained WORM files block the delete) applies. Setting it
-// to "true" deletes a SnapLock Enterprise volume that still holds retained
-// files; it is never defaulted on.
-//
-// The other delete-time options reuse the FileSystem annotations:
-//   - svcapitypes.SkipFinalBackupAnnotation sets
-//     DeleteVolumeOntapConfiguration.SkipFinalBackup (ONTAP only). Absent
-//     sends nothing, so FSx takes a final backup.
-//   - svcapitypes.OpenZFSDeleteOptionsAnnotation sets
-//     DeleteVolumeOpenZFSConfiguration.Options (OpenZFS only), validated
-//     against the DeleteOpenZFSVolumeOption enum. Absent sends nothing, so FSx
-//     refuses to delete a volume that has child volumes or snapshots, and the
-//     refusal surfaces as a condition.
-var BypassSnaplockEnterpriseRetentionAnnotation = fmt.Sprintf(
-	"%s/bypass-snaplock-enterprise-retention", svcapitypes.GroupVersion.Group,
 )
 
 // requeueWaitWhileDeleting is returned from the delete path while FSx still
@@ -118,15 +99,19 @@ func (rm *resourceManager) getTags(
 }
 
 // setTagsFromAWS replaces ko.Spec.Tags with the tags FSx reports for the
-// volume. It is skipped while the volume is DELETING, where tags no longer
-// matter and the delete path only needs Describe to report the volume gone,
-// and when the ARN is not known yet.
+// volume. It is skipped (desired's tags kept) while the CR is being deleted
+// or the volume is DELETING, so a ListTagsForResource failure cannot block
+// the delete path and spec.tags is not wiped; skipped when the ARN is not
+// known yet.
 func (rm *resourceManager) setTagsFromAWS(
 	ctx context.Context,
+	desired *svcapitypes.Volume,
 	ko *svcapitypes.Volume,
 ) error {
-	if ko.Status.Lifecycle != nil &&
-		*ko.Status.Lifecycle == string(svcsdktypes.VolumeLifecycleDeleting) {
+	if ko.DeletionTimestamp != nil ||
+		(ko.Status.Lifecycle != nil &&
+			*ko.Status.Lifecycle == string(svcsdktypes.VolumeLifecycleDeleting)) {
+		keepDesiredTags(desired, ko)
 		return nil
 	}
 	if ko.Status.ACKResourceMetadata == nil || ko.Status.ACKResourceMetadata.ARN == nil {
@@ -138,6 +123,26 @@ func (rm *resourceManager) setTagsFromAWS(
 	}
 	ko.Spec.Tags = tags
 	return nil
+}
+
+// keepDesiredTags sets ko.Spec.Tags to a deep copy of desired's tags.
+//
+// Describe reports no tags, so ko.Spec.Tags is nil wherever
+// ListTagsForResource is not called; keeping desired's stops that nil from
+// being patched back onto the CR (e.g. after DeleteVolume, whose returned
+// resource is the ReadOne result).
+func keepDesiredTags(desired, ko *svcapitypes.Volume) {
+	if desired == nil || ko == nil {
+		return
+	}
+	if desired.Spec.Tags == nil {
+		ko.Spec.Tags = nil
+		return
+	}
+	ko.Spec.Tags = make([]*svcapitypes.Tag, len(desired.Spec.Tags))
+	for i, t := range desired.Spec.Tags {
+		ko.Spec.Tags[i] = t.DeepCopy()
+	}
 }
 
 // restoreNonRoundTrippedSpecFields fixes up the ONTAP configuration the
@@ -241,39 +246,46 @@ type deleteVolumeAnnotationParameters struct {
 
 // parseDeleteVolumeAnnotations parses the Volume deletion annotations. An
 // unparseable value is an error rather than a silent default, so a typo
-// cannot quietly change what a delete destroys.
+// cannot quietly change what a delete destroys. Only the annotations that
+// apply to volumeType are read; others are ignored, so a malformed
+// annotation for the other type cannot block the delete.
 //
 // util.ParseDeletionAnnotations is not reused: it validates the OpenZFS
 // options against the FileSystem enum (DeleteFileSystemOpenZFSOption), whose
 // values differ from DeleteOpenZFSVolumeOption.
 func parseDeleteVolumeAnnotations(
+	volumeType svcsdktypes.VolumeType,
 	annotations map[string]string,
 ) (*deleteVolumeAnnotationParameters, error) {
 	params := &deleteVolumeAnnotationParameters{}
 	var err error
-	if params.SkipFinalBackup, err = parseBoolAnnotation(
-		annotations, svcapitypes.SkipFinalBackupAnnotation,
-	); err != nil {
-		return nil, err
-	}
-	if params.BypassSnaplockEnterpriseRetention, err = parseBoolAnnotation(
-		annotations, BypassSnaplockEnterpriseRetentionAnnotation,
-	); err != nil {
-		return nil, err
-	}
-	if value, ok := annotations[svcapitypes.OpenZFSDeleteOptionsAnnotation]; ok && value != "" {
-		// Validated against the SDK enum rather than a hard-coded list, so a
-		// value FSx adds later is accepted after an SDK bump with no code change.
-		known := svcsdktypes.DeleteOpenZFSVolumeOption("").Values()
-		for _, raw := range strings.Split(value, ",") {
-			opt := svcsdktypes.DeleteOpenZFSVolumeOption(strings.TrimSpace(raw))
-			if !containsOption(known, opt) {
-				return nil, fmt.Errorf(
-					"invalid value %q for annotation %s: want a comma-separated list of %v",
-					value, svcapitypes.OpenZFSDeleteOptionsAnnotation, known,
-				)
+	switch volumeType {
+	case svcsdktypes.VolumeTypeOntap:
+		if params.SkipFinalBackup, err = parseBoolAnnotation(
+			annotations, svcapitypes.SkipFinalBackupAnnotation,
+		); err != nil {
+			return nil, err
+		}
+		if params.BypassSnaplockEnterpriseRetention, err = parseBoolAnnotation(
+			annotations, svcapitypes.BypassSnaplockEnterpriseRetentionAnnotation,
+		); err != nil {
+			return nil, err
+		}
+	case svcsdktypes.VolumeTypeOpenzfs:
+		if value, ok := annotations[svcapitypes.OpenZFSDeleteOptionsAnnotation]; ok && value != "" {
+			// Validated against the SDK enum rather than a hard-coded list, so a
+			// value FSx adds later is accepted after an SDK bump with no code change.
+			known := svcsdktypes.DeleteOpenZFSVolumeOption("").Values()
+			for _, raw := range strings.Split(value, ",") {
+				opt := svcsdktypes.DeleteOpenZFSVolumeOption(strings.TrimSpace(raw))
+				if !slices.Contains(known, opt) {
+					return nil, fmt.Errorf(
+						"invalid value %q for annotation %s: want a comma-separated list of %v",
+						value, svcapitypes.OpenZFSDeleteOptionsAnnotation, known,
+					)
+				}
+				params.OpenZFSOptions = append(params.OpenZFSOptions, opt)
 			}
-			params.OpenZFSOptions = append(params.OpenZFSOptions, opt)
 		}
 	}
 	return params, nil
@@ -291,18 +303,6 @@ func parseBoolAnnotation(annotations map[string]string, key string) (*bool, erro
 	return &b, nil
 }
 
-func containsOption(
-	known []svcsdktypes.DeleteOpenZFSVolumeOption,
-	opt svcsdktypes.DeleteOpenZFSVolumeOption,
-) bool {
-	for _, k := range known {
-		if k == opt {
-			return true
-		}
-	}
-	return false
-}
-
 // setDeleteVolumeConfiguration fills in DeleteVolumeInput's per-type
 // configuration, which generator.yaml strips from the model but which still
 // exists on the SDK struct. A configuration is sent only when an annotation
@@ -315,7 +315,9 @@ func setDeleteVolumeConfiguration(
 	if r.ko.Spec.Type == nil {
 		return nil
 	}
-	params, err := parseDeleteVolumeAnnotations(r.ko.ObjectMeta.GetAnnotations())
+	params, err := parseDeleteVolumeAnnotations(
+		svcsdktypes.VolumeType(*r.ko.Spec.Type), r.ko.ObjectMeta.GetAnnotations(),
+	)
 	if err != nil {
 		// Returned as a retryable error, not a terminal one: with the default
 		// feature gates an annotation edit does not start a reconcile (only

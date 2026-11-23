@@ -1,0 +1,11 @@
+apiVersion: fsx.services.k8s.aws/v1alpha1
+kind: Backup
+metadata:
+  name: $BACKUP_NAME
+spec:
+  volumeRef:
+    from:
+      name: $VOLUME_CR_NAME
+  tags:
+    - key: $TAG_KEY
+      value: $TAG_VALUE
