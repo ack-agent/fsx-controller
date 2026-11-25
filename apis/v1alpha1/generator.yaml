@@ -899,16 +899,19 @@ resources:
           skip_incomplete_check: {}
       OpenZFSConfiguration.OriginSnapshot:
         is_immutable: true
-      # Server-defaulted members: FSx fills these in when they are left out.
+      # Server-filled members: FSx fills these in when they are left out.
       # The generated Create setter already copies the whole configuration
       # block from the response into the Spec; late_initialize
-      # covers a default that only a later Describe reports, so it does not
+      # covers a value that only a later Describe reports, so it does not
       # leave a nil-vs-value delta (and an UpdateVolume). Nested members are
       # only filled when their parent struct (TieringPolicy,
-      # AggregateConfiguration) is in the Spec. The list comes from the
-      # documented defaults and has not yet been checked against Describe for
-      # a minimal live volume; test_volume.py asserts each one and that no
-      # idle UpdateVolume is sent. skip_incomplete_check keeps a member
+      # AggregateConfiguration) is in the Spec. The list is the server-filled
+      # values Describe reports for an unset field, not documented defaults:
+      # in the fsx v1.72.0 model only SnapshotPolicy, TieringPolicy.Name,
+      # CopyTagsToBackups, DataCompressionType and RecordSizeKiB document a
+      # default (SecurityStyle inherits the root volume's style). The evidence
+      # is test_volume.py, which asserts each one and that no idle
+      # UpdateVolume is sent. skip_incomplete_check keeps a member
       # Describe does not report from requeueing forever.
       # Deliberately not late-initialized: TieringPolicy.CoolingPeriod (its
       # default applies only to AUTO/SNAPSHOT_ONLY, so the read hook drops it
