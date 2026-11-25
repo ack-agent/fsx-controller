@@ -32,11 +32,9 @@ ignore:
       # annotations by setDeleteVolumeConfiguration.
       - DeleteVolumeInput.OntapConfiguration
       - DeleteVolumeInput.OpenZFSConfiguration
-      # Deprecated in favour of SizeInBytes. Describe reports both, so keeping
-      # it would leave a nil-vs-value delta (or, late-initialized, a value
-      # that conflicts with later SizeInBytes edits). Dropped from the input
-      # shapes only: OntapVolumeConfiguration.SizeInMegabytes stays, since it
-      # is part of Backup's released status.volume.
+      # Deprecated for SizeInBytes; Describe reports both, so it would leave a
+      # perpetual delta. Input shapes only: OntapVolumeConfiguration is part of
+      # Backup's released status.volume.
       - CreateOntapVolumeConfiguration.SizeInMegabytes
       - UpdateOntapVolumeConfiguration.SizeInMegabytes
       # Populated only for Amazon File Cache associations. This resource
@@ -689,20 +687,12 @@ resources:
   Volume:
     # ClientRequestToken is an SDK idempotency token the middleware auto-fills.
     ignore_idempotency_token: true
-    # UpdateVolume's Name is documented for OpenZFS volumes only; sending it
-    # unchanged on every ONTAP update would risk an unrelated rejection. Only
-    # top-level members are omitted: a changed OntapConfiguration still
-    # carries all of its members.
-    # Spec.Name stays mutable for both types. Renaming an ONTAP volume still
-    # sends Name. That case has not been verified against a live volume. If
-    # FSx rejects it, the BadRequest surfaces as a retryable condition (the
-    # controller does not pre-validate). If FSx were found to ignore it
-    # silently, a convergence check rejecting the delta would be the fix.
+    # UpdateVolume.Name is OpenZFS-only; don't resend it unchanged for ONTAP.
+    # ONTAP rename behaviour is unverified.
     update_operation:
       omit_unchanged_fields: true
-    # Drop the Volume prefix that stutters on a Volume kind. DescribeVolumes'
-    # VolumeIds input needs no rename: it matches the <Resource>Ids lookup, so
-    # the generated list request filters by Status.ID (Backup precedent).
+    # Drop the stuttering Volume prefix. DescribeVolumes' VolumeIds needs no
+    # rename: it matches the <Resource>Ids lookup.
     renames:
       operations:
         CreateVolume:
@@ -725,82 +715,53 @@ resources:
           input_fields:
             VolumeId: ID
     hooks:
-      # Syncs tags (UpdateVolume has no Tags member) and skips the update call
-      # on tags-only changes. Placed after the generated updateable guard so
-      # tag edits are held with everything else.
+      # Syncs tags (UpdateVolume has no Tags member) and skips the update on
+      # tags-only changes. Runs after the updateable guard.
       sdk_update_post_build_request:
         template_path: hooks/volume/sdk_update_post_build_request.go.tpl
-      # The generated setters replace Spec.OntapConfiguration wholesale from
-      # the output shape, which has no ConstituentsPerAggregate; keep the
-      # declared value. Also keeps CoolingPeriod unset when the user left it
-      # unset (a default FSx applies only to some tiering policies).
+      # Output has no ConstituentsPerAggregate and a conditional CoolingPeriod
+      # default; keep what the user declared.
       sdk_create_post_set_output:
         template_path: hooks/volume/sdk_create_post_set_output.go.tpl
       # FSx reorders the OpenZFS client configurations and quota entries and
       # always reports the root (Id 0, quota 0) quotas; treat those as equal.
       delta_pre_compare:
         template_path: hooks/volume/delta_pre_compare.go.tpl
-      # Same restore after Describe; makes FAILED Terminal before reading tags
-      # via ListTagsForResource, and skips that read during deletion (keeping
-      # the desired tags).
+      # Same restore after Describe; FAILED is made Terminal; tags are read via
+      # ListTagsForResource (skipped during deletion).
       sdk_read_many_post_set_output:
         template_path: hooks/volume/sdk_read_many_post_set_output.go.tpl
-      # Delete-time options come from annotations (skip-final-backup,
-      # bypass-snaplock-enterprise-retention, openzfs-delete-options); absent
-      # annotations send nothing so FSx's defaults apply. FinalBackupTags is
-      # not supported yet: a tag list does not fit one annotation well.
+      # Delete-time options come from annotations; none set sends nothing.
+      # FinalBackupTags is not supported.
       sdk_delete_post_build_request:
         template_path: hooks/volume/sdk_delete_post_build_request.go.tpl
       # Delete is async: record DELETING and hold the finalizer until Describe
       # reports VolumeNotFound.
       sdk_delete_post_request:
         template_path: hooks/volume/sdk_delete_post_request.go.tpl
-    # Tags are inline on CreateVolume; updates go through
-    # TagResource/UntagResource. DescribeVolumes does not report tags despite
-    # the model (e2e), so the read hook fetches them with ListTagsForResource
-    # (rm.getTags), as for StorageVirtualMachine.
+    # DescribeVolumes does not report tags despite the model, so the read hook
+    # uses ListTagsForResource.
     tags:
       ignore: false
-    # ONTAP volumes settle in CREATED, OpenZFS volumes in AVAILABLE; CREATING
-    # and PENDING requeue. MISCONFIGURED is documented as recoverable and stays
-    # retryable; FAILED is made Terminal by the read hook.
+    # ONTAP settles in CREATED, OpenZFS in AVAILABLE. FAILED is made Terminal
+    # by the read hook; MISCONFIGURED is recoverable and stays retryable.
     synced:
       when:
         - path: Status.Lifecycle
           in: [ "CREATED", "AVAILABLE" ]
-    # Skip a redundant DeleteVolume while one is in flight. Every other state
-    # is allowed so a requested delete is never blocked. This is an allow-list
-    # of every VolumeLifecycle value in the SDK model except DELETING; a
-    # lifecycle value FSx adds later would requeue the delete until the list
-    # is updated and the controller is regenerated (no `not_in` option; see
-    # updateable).
+    # Skip a redundant DeleteVolume while DELETING. Allow-list because `when`
+    # has no `not_in`.
     deletable:
       when:
         - path: Status.Lifecycle
           in: [ "AVAILABLE", "CREATED", "CREATING", "PENDING", "FAILED", "MISCONFIGURED" ]
-    # UpdateVolume is rejected while the volume is CREATING (e2e: "BadRequest:
-    # Volume ... cannot be updated because it is being created", retried
-    # 250+ times in a tight backoff right after create, when Describe does
-    # not yet report UserAndGroupQuotas). DELETING is held because the volume
-    # is going away; FSx is expected to reject UpdateVolume there (not
-    # verified against a live volume), and a held requeue is quieter than a
-    # BadRequest backoff. Like `deletable`, this is an allow-list of the
-    # remaining VolumeLifecycle values in the SDK model, so a value FSx adds
-    # later is held until the list is updated; code-generator has no `not_in`
-    # option for `when` (suggested upstream issue).
+    # FSx rejects UpdateVolume while CREATING; DELETING is held too.
+    # Allow-list because `when` has no `not_in`.
     updateable:
       when:
         - path: Status.Lifecycle
           in: [ "AVAILABLE", "CREATED", "PENDING", "FAILED", "MISCONFIGURED" ]
-    # Only codes fixable by editing this Spec belong here. MissingVolumeConfiguration
-    # is cleared by adding the ontapConfiguration/openZFSConfiguration block
-    # that matches spec.type. Deliberately excluded: BadRequest (the
-    # catch-all, also used for duplicate names); UnsupportedOperation (fixed
-    # only through the immutable SVM/parent or the parent file system's type);
-    # StorageVirtualMachineNotFound and FileSystemNotFound (transient right
-    # after the parent is created, and the IDs are immutable);
-    # ServiceLimitExceeded (external); IncompatibleParameterError (an
-    # idempotency-token clash the SDK clears next reconcile).
+    # Terminal only for codes fixable by editing the Spec.
     exceptions:
       errors:
         404:
@@ -817,21 +778,12 @@ resources:
       Type:
         is_immutable: true
         go_tag: json:"type,omitempty"
-      # The Update response is not authoritative for tags (synced through
-      # TagResource/UntagResource); keep desired's. `ignore: true` rather than
-      # "all": UpdateVolumeInput has no Tags member to skip.
+      # Tags are synced via TagResource/UntagResource; keep desired's.
       Tags:
         set:
           - method: Update
             ignore: true
-      # UpdateVolume is asynchronous and its response reports the volume as
-      # it was before the update (e2e: after an ONTAP SizeInBytes and
-      # SnapshotPolicy change, and an OpenZFS quota/compression/NFS/quota-list
-      # change, the response still had the old values). Setting the Spec from
-      # it patched the old values back onto the CR, reverting the user's edit.
-      # Keep desired's; the next Describe reports the applied state, so drift
-      # stays visible. `ignore: true` rather than "all": the request must still
-      # be built from these members.
+      # UpdateVolume's response reports pre-update values; keep desired's.
       Name:
         set:
           - method: Update
@@ -844,23 +796,16 @@ resources:
         set:
           - method: Update
             ignore: true
-      # Create-only members: absent from UpdateOntapVolumeConfiguration /
-      # UpdateOpenZFSVolumeConfiguration (and UpdateSnaplockConfiguration).
-      # Without is_immutable an edit would be silently dropped.
-      # Known gap (community#3097): the CEL rule is skipped when the old value
-      # is absent and cannot see ...Ref changes; Describe still reports the
-      # actual values (except ConstituentsPerAggregate, which is restored from
-      # desired), so the delta remains visible.
+      # Create-only (absent from the Update shapes); without is_immutable an
+      # edit would be silently dropped. Known gap (community#3097): the CEL rule
+      # skips an absent old value and cannot see ...Ref changes.
       OntapConfiguration.StorageVirtualMachineId:
         is_immutable: true
         references:
           resource: StorageVirtualMachine
           path: Status.ID
-      # Immutable per member, not on the AggregateConfiguration struct:
-      # Aggregates is late-initialized, and a struct-level `self == oldSelf`
-      # rule would reject that write when the user declared only
-      # ConstituentsPerAggregate. A member-level rule is skipped when the old
-      # value is absent.
+      # Immutable per member: a struct-level rule would reject late-init of
+      # Aggregates when only ConstituentsPerAggregate is declared.
       OntapConfiguration.AggregateConfiguration.ConstituentsPerAggregate:
         is_immutable: true
       # Stutters with both the parent and the kind. Defaults to RW;
@@ -899,25 +844,10 @@ resources:
           skip_incomplete_check: {}
       OpenZFSConfiguration.OriginSnapshot:
         is_immutable: true
-      # Server-filled members: FSx fills these in when they are left out.
-      # The generated Create setter already copies the whole configuration
-      # block from the response into the Spec; late_initialize
-      # covers a value that only a later Describe reports, so it does not
-      # leave a nil-vs-value delta (and an UpdateVolume). Nested members are
-      # only filled when their parent struct (TieringPolicy,
-      # AggregateConfiguration) is in the Spec. The list is the server-filled
-      # values Describe reports for an unset field, not documented defaults:
-      # in the fsx v1.72.0 model only SnapshotPolicy, TieringPolicy.Name,
-      # CopyTagsToBackups, DataCompressionType and RecordSizeKiB document a
-      # default (SecurityStyle inherits the root volume's style). The evidence
-      # is test_volume.py, which asserts each one and that no idle
-      # UpdateVolume is sent. skip_incomplete_check keeps a member
-      # Describe does not report from requeueing forever.
-      # Deliberately not late-initialized: TieringPolicy.CoolingPeriod (its
-      # default applies only to AUTO/SNAPSHOT_ONLY, so the read hook drops it
-      # when undeclared), StorageVirtualMachineId and ParentVolumeId (with a
-      # ...Ref set, a late-initialized ID would make reference resolution fail),
-      # and SizeInBytes/JunctionPath (no documented default).
+      # FSx fills these in when omitted; late-init copies them from Describe to
+      # avoid a perpetual delta (asserted in test_volume.py). Not
+      # late-initialized: CoolingPeriod (conditional default, see read hook) and
+      # StorageVirtualMachineId/ParentVolumeId (would break *Ref resolution).
       OntapConfiguration.SecurityStyle:
         late_initialize:
           skip_incomplete_check: {}

@@ -61,13 +61,9 @@ func (rm *resourceManager) syncTags(
 	)
 }
 
-// getTags returns the volume's tags from ListTagsForResource.
-//
-// DescribeVolumes does not report volume tags although the model has
-// Volume.Tags (e2e: Describe returned no Tags while ListTagsForResource had
-// them). Without this latest.Spec.Tags is always nil: every reconcile sees a
-// Spec.Tags delta and re-issues TagResource, removed tags are never untagged,
-// and the nil is patched back onto the CR, wiping spec.tags.
+// getTags returns the volume's tags from ListTagsForResource. DescribeVolumes
+// does not report tags despite the model, which would otherwise leave a
+// permanent Spec.Tags delta and wipe spec.tags.
 func (rm *resourceManager) getTags(
 	ctx context.Context,
 	arn string,
@@ -98,11 +94,9 @@ func (rm *resourceManager) getTags(
 	return tags, nil
 }
 
-// setTagsFromAWS replaces ko.Spec.Tags with the tags FSx reports for the
-// volume. It is skipped (desired's tags kept) while the CR is being deleted
-// or the volume is DELETING, so a ListTagsForResource failure cannot block
-// the delete path and spec.tags is not wiped; skipped when the ARN is not
-// known yet.
+// setTagsFromAWS sets ko.Spec.Tags from ListTagsForResource. It keeps
+// desired's tags during deletion, so a tag-read failure cannot block delete,
+// and does nothing until the ARN is known.
 func (rm *resourceManager) setTagsFromAWS(
 	ctx context.Context,
 	desired *svcapitypes.Volume,
@@ -125,12 +119,8 @@ func (rm *resourceManager) setTagsFromAWS(
 	return nil
 }
 
-// keepDesiredTags sets ko.Spec.Tags to a deep copy of desired's tags.
-//
-// Describe reports no tags, so ko.Spec.Tags is nil wherever
-// ListTagsForResource is not called; keeping desired's stops that nil from
-// being patched back onto the CR (e.g. after DeleteVolume, whose returned
-// resource is the ReadOne result).
+// keepDesiredTags sets ko.Spec.Tags to a deep copy of desired's tags, so a
+// nil from Describe (which reports no tags) is not patched onto the CR.
 func keepDesiredTags(desired, ko *svcapitypes.Volume) {
 	if desired == nil || ko == nil {
 		return
@@ -145,24 +135,11 @@ func keepDesiredTags(desired, ko *svcapitypes.Volume) {
 	}
 }
 
-// restoreNonRoundTrippedSpecFields fixes up the ONTAP configuration the
-// generated setters build from a Create or Describe response, which replace
-// ko.Spec.OntapConfiguration wholesale (the Update response does not set the
-// Spec; see generator.yaml):
-//
-//   - AggregateConfiguration.ConstituentsPerAggregate is create-only (absent
-//     from UpdateOntapVolumeConfiguration) and the output shape has no such
-//     member (it reports TotalConstituents instead), so it is copied from
-//     desired when declared. Restoring it cannot mask a change the controller
-//     could apply.
-//   - TieringPolicy.CoolingPeriod is dropped when desired leaves it unset.
-//     FSx reports a default only for the AUTO and SNAPSHOT_ONLY policies, so
-//     it cannot be late-initialized: once copied into the Spec it would be
-//     re-sent when the policy changes to one that rejects it. A declared
-//     value is left as observed, so drift on it stays visible.
-//
-// Nothing is restored when either side has no ONTAP configuration, so no
-// configuration the user did not submit is fabricated.
+// restoreNonRoundTrippedSpecFields fixes up the ONTAP configuration that the
+// Create and Describe setters replace wholesale. It restores a declared
+// AggregateConfiguration.ConstituentsPerAggregate (the output shape has no
+// such member) and drops an undeclared TieringPolicy.CoolingPeriod (FSx
+// defaults it only for some policies, so it can't be late-initialized).
 func restoreNonRoundTrippedSpecFields(
 	desired *svcapitypes.Volume,
 	ko *svcapitypes.Volume,
@@ -189,18 +166,9 @@ func restoreNonRoundTrippedSpecFields(
 	}
 }
 
-// terminalIfFailed returns a terminal error when FSx reports the volume as
-// FAILED ("Amazon FSx was unable to create the volume"). FAILED is final on
-// the AWS side: no Spec edit or retry recovers it, and deleting and
-// recreating the CR is the only way out. The Terminal condition stops a
-// pointless requeue and surfaces LifecycleTransitionReason. The returned
-// resource is non-nil so Status is still patched alongside the condition.
-//
-// MISCONFIGURED is deliberately excluded: FSx documents it as recoverable, and
-// a Terminal condition would stop the requeue that observes recovery.
-//
-// Never while the CR is being deleted: the delete path calls ReadOne first and
-// aborts on any error but NotFound, and FAILED volumes are deletable.
+// terminalIfFailed returns a Terminal error when the volume is FAILED, which
+// is unrecoverable. MISCONFIGURED is recoverable and stays retryable. Skipped
+// during delete: the delete path's ReadOne aborts on any non-NotFound error.
 func terminalIfFailed(ko *svcapitypes.Volume) error {
 	if ko == nil || ko.Status.Lifecycle == nil {
 		return nil
@@ -244,15 +212,10 @@ type deleteVolumeAnnotationParameters struct {
 	OpenZFSOptions                    []svcsdktypes.DeleteOpenZFSVolumeOption
 }
 
-// parseDeleteVolumeAnnotations parses the Volume deletion annotations. An
-// unparseable value is an error rather than a silent default, so a typo
-// cannot quietly change what a delete destroys. Only the annotations that
-// apply to volumeType are read; others are ignored, so a malformed
-// annotation for the other type cannot block the delete.
-//
-// util.ParseDeletionAnnotations is not reused: it validates the OpenZFS
-// options against the FileSystem enum (DeleteFileSystemOpenZFSOption), whose
-// values differ from DeleteOpenZFSVolumeOption.
+// parseDeleteVolumeAnnotations parses the deletion annotations for
+// volumeType only. An unparseable value is an error, so a typo cannot change
+// what a delete destroys. util.ParseDeletionAnnotations validates against
+// the FileSystem enum, whose values differ.
 func parseDeleteVolumeAnnotations(
 	volumeType svcsdktypes.VolumeType,
 	annotations map[string]string,
@@ -273,8 +236,7 @@ func parseDeleteVolumeAnnotations(
 		}
 	case svcsdktypes.VolumeTypeOpenzfs:
 		if value, ok := annotations[svcapitypes.OpenZFSDeleteOptionsAnnotation]; ok && value != "" {
-			// Validated against the SDK enum rather than a hard-coded list, so a
-			// value FSx adds later is accepted after an SDK bump with no code change.
+			// Validated against the SDK enum, so new values arrive with an SDK bump.
 			known := svcsdktypes.DeleteOpenZFSVolumeOption("").Values()
 			for _, raw := range strings.Split(value, ",") {
 				opt := svcsdktypes.DeleteOpenZFSVolumeOption(strings.TrimSpace(raw))
@@ -304,10 +266,8 @@ func parseBoolAnnotation(annotations map[string]string, key string) (*bool, erro
 }
 
 // setDeleteVolumeConfiguration fills in DeleteVolumeInput's per-type
-// configuration, which generator.yaml strips from the model but which still
-// exists on the SDK struct. A configuration is sent only when an annotation
-// for that volume type sets something, so FSx's defaults apply otherwise.
-// FinalBackupTags is not supported.
+// configuration (stripped from the model by generator.yaml) only when an
+// annotation for that volume type sets something.
 func setDeleteVolumeConfiguration(
 	r *resource,
 	input *svcsdk.DeleteVolumeInput,
@@ -319,12 +279,8 @@ func setDeleteVolumeConfiguration(
 		svcsdktypes.VolumeType(*r.ko.Spec.Type), r.ko.ObjectMeta.GetAnnotations(),
 	)
 	if err != nil {
-		// Returned as a retryable error, not a terminal one: with the default
-		// feature gates an annotation edit does not start a reconcile (only
-		// a generation change does), so a terminal error would leave the CR
-		// stuck in deletion until the next resync. The requeue backoff picks
-		// up the corrected annotation, and the error stays in the condition
-		// message until then. Nothing is sent to FSx while it is malformed.
+		// Retryable, not Terminal: an annotation edit doesn't bump the generation,
+		// so a Terminal error would stall the delete until the next resync.
 		return err
 	}
 	switch svcsdktypes.VolumeType(*r.ko.Spec.Type) {
@@ -345,23 +301,10 @@ func setDeleteVolumeConfiguration(
 	return nil
 }
 
-// normalizeOpenZFSLists makes the generated, order-sensitive compare of the
-// OpenZFS NFS export and quota lists ignore what FSx rewrites, by copying
-// desired's list into latest when the two are equivalent:
-//
-//   - NfsExports[].ClientConfigurations: FSx returns the client
-//     configurations in its own order (e2e: two declared entries came back
-//     reversed). Equal as multisets ⇒ equivalent.
-//   - UserAndGroupQuotas: FSx always reports the root entries
-//     {Type: USER|GROUP, Id: 0, StorageCapacityQuotaGiB: 0} (e2e: present on
-//     a volume created without quotas, and appended after two declared
-//     entries by UpdateVolume) and may reorder entries. A reported root entry
-//     with quota 0 whose (Type, Id 0) desired does not declare is skipped;
-//     the rest must match as a multiset.
-//
-// Any other difference is left to the generated compare, so a real change
-// (or drift) still produces a delta. latest gets a copy, never desired's
-// slice, so later writes to one cannot change the other.
+// normalizeOpenZFSLists copies desired's NfsExports ClientConfigurations and
+// UserAndGroupQuotas into latest when they are equivalent. FSx reorders both
+// and adds root quota entries (Id 0, quota 0), so treat equivalent lists as
+// equal. A real difference still produces a delta.
 func normalizeOpenZFSLists(a, b *resource) {
 	if a.ko.Spec.OpenZFSConfiguration == nil || b.ko.Spec.OpenZFSConfiguration == nil {
 		return
