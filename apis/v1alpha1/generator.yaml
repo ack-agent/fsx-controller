@@ -687,8 +687,8 @@ resources:
   Volume:
     # ClientRequestToken is an SDK idempotency token the middleware auto-fills.
     ignore_idempotency_token: true
-    # UpdateVolume.Name is OpenZFS-only; don't resend it unchanged for ONTAP.
-    # ONTAP rename behaviour is unverified.
+    # Don't resend an unchanged Name (also avoids an extra UpdateVolume
+    # parameter on ONTAP config-only updates).
     update_operation:
       omit_unchanged_fields: true
     # Drop the stuttering Volume prefix. DescribeVolumes' VolumeIds needs no

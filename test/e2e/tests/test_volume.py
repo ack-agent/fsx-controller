@@ -58,6 +58,8 @@ VOLUME_RESOURCE_PLURAL = "volumes"
 BACKUP_RESOURCE_PLURAL = "backups"
 
 SKIP_FINAL_BACKUP_ANNOTATION = "fsx.services.k8s.aws/skip-final-backup"
+OPENZFS_DELETE_OPTIONS_ANNOTATION = "fsx.services.k8s.aws/openzfs-delete-options"
+DELETION_POLICY_ANNOTATION = "services.k8s.aws/deletion-policy"
 
 TAG_KEY = "ack-fsx-e2e"
 INITIAL_TAG_VALUE = "initial"
@@ -75,6 +77,9 @@ GIB = 1024 ** 3
 ONTAP_INITIAL_SIZE = 20 * GIB
 ONTAP_UPDATED_SIZE = 30 * GIB
 ONTAP_UPDATED_SNAPSHOT_POLICY = "none"
+# Appended to the ONTAP volume name by the rename step; ONTAP names allow
+# [A-Za-z0-9_].
+ONTAP_RENAME_SUFFIX = "_renamed"
 
 OPENZFS_UPDATED_QUOTA_GIB = 10
 OPENZFS_UPDATED_COMPRESSION = "LZ4"
@@ -395,7 +400,10 @@ def ontap_volume(fsx_client, ontap_svm):
             _cleanup_volume(fsx_client, ref)
         finally:
             # The test deletes without skip-final-backup; remove that backup.
+            # The backup carries the volume's name at delete time, which is
+            # the renamed one unless the test failed before the rename.
             _delete_final_backups(fsx_client, volume_name)
+            _delete_final_backups(fsx_client, volume_name + ONTAP_RENAME_SUFFIX)
 
 
 def _delete_final_backups(fsx_client, volume_name):
@@ -468,6 +476,10 @@ class TestOntapVolume:
         _assert_no_idle_update(ref, validator, volume_id, UPDATED_TAGS)
         self._update_and_assert(ref, validator, volume_id)
         _assert_no_idle_update(ref, validator, volume_id, INITIAL_TAGS)
+        new_name = volume_name + ONTAP_RENAME_SUFFIX
+        self._rename_and_assert(ref, validator, volume_id, new_name)
+        # Describe must converge with the renamed spec: no idle UpdateVolume.
+        _assert_no_idle_update(ref, validator, volume_id, UPDATED_TAGS)
         # Backup.volumeRef resolves to this volume; gone before the volume is.
         _backup_by_volume_ref_and_assert(fsx_client, ref, volume_id)
 
@@ -475,7 +487,7 @@ class TestOntapVolume:
             cfg = cr["spec"]["ontapConfiguration"]
             assert cfg["storageVirtualMachineID"] == svm_id
             assert cfg["sizeInBytes"] == ONTAP_UPDATED_SIZE
-        _adopt_and_assert(fsx_client, validator, volume_id, "ONTAP", volume_name, check)
+        _adopt_and_assert(fsx_client, validator, volume_id, "ONTAP", new_name, check)
         self._delete_and_assert(ref, validator, volume_id)
 
     def _assert_created(self, ref, validator, file_system_id, svm_id, volume_id, volume_name):
@@ -529,6 +541,25 @@ class TestOntapVolume:
         cfg = k8s.get_resource(ref)["spec"]["ontapConfiguration"]
         assert cfg["sizeInBytes"] == ONTAP_UPDATED_SIZE
         assert cfg["snapshotPolicy"] == ONTAP_UPDATED_SNAPSHOT_POLICY
+
+    def _rename_and_assert(self, ref, validator, volume_id, new_name):
+        """Changes spec.name. FSx applies an ONTAP rename asynchronously and
+        the UpdateVolume response still reports the old name, so poll
+        Describe, then check the spec kept the new name."""
+        k8s.patch_custom_resource(ref, {"spec": {"name": new_name}})
+        time.sleep(MODIFY_WAIT_AFTER_SECONDS)
+        assert validator.wait_until(
+            volume_id,
+            lambda v: v["Name"] == new_name,
+            "renamed",
+            wait_periods=VOLUME_MODIFY_WAIT_PERIODS,
+            period_length=VOLUME_MODIFY_PERIOD_LENGTH,
+        )
+        wait_for_synced_or_terminal(
+            ref, VOLUME_MODIFY_WAIT_PERIODS, VOLUME_MODIFY_PERIOD_LENGTH,
+            current_generation=True,
+        )
+        assert k8s.get_resource(ref)["spec"]["name"] == new_name
 
     def _delete_and_assert(self, ref, validator, volume_id):
         """Deletes with the skip-final-backup annotation removed, so
@@ -585,8 +616,9 @@ class TestOpenZFSVolume:
         child_ref = _ref(
             VOLUME_RESOURCE_PLURAL, random_suffix_name("ack-fsx-vol-ozfs-child", 32),
         )
+        child_id = None
         try:
-            self._create_child_by_ref(fsx_client, child_ref, ref, validator, volume_id)
+            child_id = self._create_child_by_ref(fsx_client, child_ref, ref, validator, volume_id)
             _assert_no_idle_update(ref, validator, volume_id, UPDATED_TAGS)
             self._update_and_assert(ref, validator, volume_id)
             _assert_no_idle_update(ref, validator, volume_id, {TAG_KEY: INITIAL_TAG_VALUE})
@@ -596,11 +628,22 @@ class TestOpenZFSVolume:
                 assert cfg["parentVolumeID"] == root_volume_id
                 assert cfg["storageCapacityQuotaGiB"] == OPENZFS_UPDATED_QUOTA_GIB
             _adopt_and_assert(fsx_client, validator, volume_id, "OPENZFS", volume_name, check)
+            self._delete_with_children_and_assert(ref, child_ref, validator, volume_id, child_id)
         finally:
-            # The child must go first: without delete options FSx refuses to
-            # delete a volume that has children.
+            # Normally the child CR is released with deletion-policy retain
+            # and the child volume removed by the parent's delete options.
+            # This is the fallback for a failure before that: remove the child
+            # so the fixture's parent cleanup is not refused (FSx rejects
+            # deleting a volume with children and no delete options).
             _cleanup_volume(fsx_client, child_ref)
-        self._delete_and_assert(ref, validator, volume_id)
+            if child_id is not None and validator.get(child_id) is not None:
+                # Asynchronous: the parent's delete may be refused once while
+                # the child is still going; the controller retries it, within
+                # the fixture's delete wait.
+                try:
+                    fsx_client.delete_volume(VolumeId=child_id)
+                except Exception as e:
+                    logging.error(f"could not delete child volume {child_id}: {e}")
 
     def _assert_created(self, ref, validator, file_system_id, root_volume_id, volume_id, volume_name):
         assert volume_id is not None
@@ -636,6 +679,7 @@ class TestOpenZFSVolume:
         assert child["OpenZFSConfiguration"]["ParentVolumeId"] == parent_id
         cr = k8s.get_resource(child_ref)
         assert cr["spec"]["openZFSConfiguration"]["parentVolumeRef"]["from"]["name"] == parent_ref.name
+        return child_id
 
     def _update_and_assert(self, ref, validator, volume_id):
         """Updates scalar members and the NFS export / quota lists.
@@ -680,8 +724,27 @@ class TestOpenZFSVolume:
         assert cfg["nfsExports"] == nfs_exports
         assert cfg["userAndGroupQuotas"] == quotas
 
-    def _delete_and_assert(self, ref, validator, volume_id):
-        """No delete annotations, so DeleteVolume carries no
-        OpenZFSConfiguration."""
+    def _delete_with_children_and_assert(self, ref, child_ref, validator, volume_id, child_id):
+        """Deletes the parent while the child volume still exists, with the
+        openzfs-delete-options annotation, so DeleteVolume carries
+        OpenZFSConfiguration.Options DELETE_CHILD_VOLUMES_AND_SNAPSHOTS and
+        FSx removes both.
+
+        The child CR is released first with deletion-policy retain: left in
+        place, the controller would see VolumeNotFound for it once FSx
+        deletes the child and recreate it under the still-resolvable parent.
+        """
+        k8s.patch_custom_resource(child_ref, {
+            "metadata": {"annotations": {DELETION_POLICY_ANNOTATION: "retain"}},
+        })
+        _delete_cr(child_ref, VOLUME_DELETE_WAIT_PERIODS, VOLUME_DELETE_PERIOD_LENGTH)
+        # Retained: the child volume is still there for the parent's delete.
+        assert validator.get(child_id) is not None
+        k8s.patch_custom_resource(ref, {
+            "metadata": {"annotations": {
+                OPENZFS_DELETE_OPTIONS_ANNOTATION: "DELETE_CHILD_VOLUMES_AND_SNAPSHOTS",
+            }},
+        })
         _delete_cr(ref, VOLUME_DELETE_WAIT_PERIODS, VOLUME_DELETE_PERIOD_LENGTH)
-        assert validator.wait_until_gone(volume_id, wait_periods=4, period_length=15)
+        assert validator.wait_until_gone(volume_id)
+        assert validator.wait_until_gone(child_id)
