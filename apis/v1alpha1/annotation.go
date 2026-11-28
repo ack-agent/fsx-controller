@@ -50,5 +50,9 @@ var (
 	// sends nothing, so FSx's default (false: retained WORM files block the
 	// delete) applies. Setting it to "true" deletes a SnapLock Enterprise
 	// volume that still holds retained files; it is never defaulted on.
+	//
+	// Requires the controller's IAM role to allow
+	// fsx:BypassSnaplockEnterpriseRetention, which AmazonFSxFullAccess does not
+	// include; without it DeleteVolume fails with AccessDenied.
 	BypassSnaplockEnterpriseRetentionAnnotation = fmt.Sprintf("%s/bypass-snaplock-enterprise-retention", GroupVersion.Group)
 )
